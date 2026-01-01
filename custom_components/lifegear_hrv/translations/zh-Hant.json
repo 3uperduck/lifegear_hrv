@@ -1,0 +1,41 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "設定樂奇全熱交換機",
+        "description": "請輸入您的帳號資訊（從 App 抓包取得）",
+        "data": {
+          "user_id": "使用者 ID (u_id)",
+          "auth_code": "認證碼 (AuthCode)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "無法連線到伺服器",
+      "invalid_auth": "帳號認證失敗",
+      "unknown": "未知錯誤"
+    },
+    "abort": {
+      "already_configured": "裝置已經設定過了"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "co2": { "name": "CO2" },
+      "pm25": { "name": "PM2.5" },
+      "temperature": { "name": "溫度" },
+      "humidity": { "name": "濕度" },
+      "speed_sensor": { "name": "目前風速" },
+      "mode_sensor": { "name": "目前模式" }
+    },
+    "switch": {
+      "power": { "name": "電源" }
+    },
+    "select": {
+      "mode": { "name": "模式" }
+    },
+    "number": {
+      "speed": { "name": "風速" }
+    }
+  }
+}

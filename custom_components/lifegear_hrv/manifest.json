@@ -1,0 +1,12 @@
+{
+  "domain": "lifegear_hrv",
+  "name": "Lifegear 樂奇全熱交換機",
+  "codeowners": ["@3uperduck"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/3uperduck/lifegear_hrv",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/3uperduck/lifegear_hrv/issues",
+  "requirements": ["aiohttp>=3.8.0"],
+  "version": "1.0.0"
+}
