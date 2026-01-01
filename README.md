@@ -1,10 +1,10 @@
-# Lifegear HRV 樂奇全熱交換機 Home Assistant 整合
+# Lifegear 樂奇全熱交換機 Home Assistant 整合
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub Release](https://img.shields.io/github/release/3uperduck/lifegear_hrv.svg)](https://github.com/3uperduck/lifegear_hrv/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Home Assistant 自訂整合，支援樂奇電器（Lifegear）智慧果 M8 全熱交換機。
+Home Assistant 自訂整合，支援樂奇電器全熱交換機透過智慧果 M8連接。
 
 ## 功能
 
@@ -17,7 +17,7 @@ Home Assistant 自訂整合，支援樂奇電器（Lifegear）智慧果 M8 全�
 
 ## 支援設備
 
-- 樂奇智慧果 M8 (Smart Fruit M8)
+- 樂奇智慧果 M8
 
 ## 安裝
 
@@ -93,4 +93,3 @@ MIT License
 ## 致謝
 
 - 感謝 [Anthropic Claude](https://www.anthropic.com/) 協助開發此整合
-- 感謝樂奇電器提供優質的全熱交換設備
