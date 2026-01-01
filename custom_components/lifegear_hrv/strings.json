@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "設定樂奇全熱交換機",
+        "description": "請輸入您的帳號資訊（從 App 抓包取得）",
+        "data": {
+          "user_id": "使用者 ID (u_id)",
+          "auth_code": "認證碼 (AuthCode)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "無法連線到伺服器",
+      "invalid_auth": "帳號認證失敗",
+      "unknown": "未知錯誤"
+    },
+    "abort": {
+      "already_configured": "裝置已經設定過了"
+    }
+  }
+}
