@@ -57,7 +57,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
                     device = result[0]
                     if device.get("mdid"):
                         return {
-                            "title": device.get("md_wisdom") or "樂奇全熱交換機",
+                            "title": device.get("md_wisdom", "樂奇全熱交換機"),
                             CONF_DEVICE_ID: str(device.get("mdid")),
                             CONF_MAC: device.get("md_mac"),
                         }
@@ -82,7 +82,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: config_entries.ConfigEntry):
         """Get the options flow for this handler."""
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -153,10 +153,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options flow."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
