@@ -1,10 +1,10 @@
-# Lifegear 樂奇全熱交換機 Home Assistant 整合
+# Lifegear HRV 樂奇全熱交換機 Home Assistant 整合
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub Release](https://img.shields.io/github/release/3uperduck/lifegear_hrv.svg)](https://github.com/3uperduck/lifegear_hrv/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Home Assistant 自訂整合，支援樂奇電器全熱交換機透過智慧果 M8連接。
+Home Assistant 自訂整合，支援樂奇電器（Lifegear）智慧果 M8 全熱交換機。
 
 ## 功能
 
@@ -14,10 +14,11 @@ Home Assistant 自訂整合，支援樂奇電器全熱交換機透過智慧果 M
 - ✅ 調整風速（1-4 檔）
 - ✅ 自動重試機制確保指令送達
 - ✅ 繁體中文介面
+- ✅ 支援重新設定認證碼（v1.1.0+）
 
 ## 支援設備
 
-- 樂奇智慧果 M8
+- 樂奇智慧果 M8 (Smart Fruit M8)
 
 ## 安裝
 
@@ -44,9 +45,21 @@ Home Assistant 自訂整合，支援樂奇電器全熱交換機透過智慧果 M
    - 使用者 ID (u_id)
    - 認證碼 (AuthCode)
 
+### 更新認證碼
+
+當認證碼過期時（錯誤訊息：手機驗證碼錯誤），可以直接更新認證碼而不需要刪除整合：
+
+1. 前往 **設定** → **裝置與服務**
+2. 找到 **Lifegear 樂奇全熱交換機**
+3. 點選 **設定**（齒輪圖示）
+4. 輸入新的認證碼
+5. 儲存
+
 ### 如何取得帳號資訊？
 
 需要透過封包擷取取得 App 的 API 參數：
+
+#### 方法一：Windows + Wireshark
 
 1. 在電腦上開啟 **行動熱點**
 2. 將智慧果 M8 連接到電腦熱點
@@ -56,6 +69,21 @@ Home Assistant 自訂整合，支援樂奇電器全熱交換機透過智慧果 M
 6. 在 Wireshark 中過濾 `http` 封包
 7. 找到發送到 `m8.daguan-tech.com.tw` 的請求
 8. 從請求內容中取得 `u_id` 和 `AuthCode`
+
+#### 方法二：macOS + Proxyman
+
+1. 下載並安裝 **Proxyman**
+2. 手機設定 WiFi Proxy 指向 Mac 的 IP:9090
+3. 在手機上安裝 Proxyman 的 CA 憑證
+4. 打開樂奇 App 操作設備
+5. 在 Proxyman 查看封包取得 `u_id` 和 `AuthCode`
+
+#### 方法三：Android + HttpCanary
+
+1. 安裝 **HttpCanary** App
+2. 開啟抓包功能
+3. 打開樂奇智慧果 App 並操作
+4. 查看封包取得 `u_id` 和 `AuthCode`
 
 ## 實體說明
 
@@ -78,9 +106,16 @@ Home Assistant 自訂整合，支援樂奇電器全熱交換機透過智慧果 M
 | 模式 | 自動/淨化/全熱 |
 | 風速 | 1-4 檔風速調整 |
 
-## 截圖
+## 更新日誌
 
-![裝置畫面](images/device.png)
+### v1.1.0
+- 新增：支援在設定中直接更新認證碼
+- 新增：重新設定功能，無需刪除整合即可更新帳號資訊
+
+### v1.0.0
+- 首次發布
+- 支援讀取 CO2、PM2.5、溫度、濕度
+- 支援控制電源、模式、風速
 
 ## 問題回報
 
@@ -93,3 +128,4 @@ MIT License
 ## 致謝
 
 - 感謝 [Anthropic Claude](https://www.anthropic.com/) 協助開發此整合
+- 感謝樂奇電器提供優質的全熱交換設備

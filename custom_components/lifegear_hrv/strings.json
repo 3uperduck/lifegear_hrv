@@ -8,6 +8,14 @@
           "user_id": "使用者 ID (u_id)",
           "auth_code": "認證碼 (AuthCode)"
         }
+      },
+      "reconfigure": {
+        "title": "重新設定樂奇全熱交換機",
+        "description": "請輸入新的帳號資訊",
+        "data": {
+          "user_id": "使用者 ID (u_id)",
+          "auth_code": "認證碼 (AuthCode)"
+        }
       }
     },
     "error": {
@@ -16,7 +24,25 @@
       "unknown": "未知錯誤"
     },
     "abort": {
-      "already_configured": "裝置已經設定過了"
+      "already_configured": "裝置已經設定過了",
+      "reconfigure_successful": "設定已更新"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "更新認證資訊",
+        "description": "請輸入新的帳號資訊",
+        "data": {
+          "user_id": "使用者 ID (u_id)",
+          "auth_code": "認證碼 (AuthCode)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "無法連線到伺服器",
+      "invalid_auth": "帳號認證失敗",
+      "unknown": "未知錯誤"
     }
   }
 }

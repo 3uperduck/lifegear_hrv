@@ -8,7 +8,7 @@ from typing import Any
 import aiohttp
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 
@@ -57,7 +57,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
                     device = result[0]
                     if device.get("mdid"):
                         return {
-                            "title": device.get("md_wisdom", "樂奇全熱交換機"),
+                            "title": device.get("md_wisdom") or "樂奇全熱交換機",
                             CONF_DEVICE_ID: str(device.get("mdid")),
                             CONF_MAC: device.get("md_mac"),
                         }
@@ -77,6 +77,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Lifegear HRV."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry):
+        """Get the options flow for this handler."""
+        return OptionsFlowHandler(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -102,6 +108,102 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_DATA_SCHEMA,
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle reconfiguration."""
+        errors: dict[str, str] = {}
+        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+
+        if user_input is not None:
+            try:
+                info = await validate_input(self.hass, user_input)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+            else:
+                new_data = {
+                    CONF_USER_ID: user_input[CONF_USER_ID],
+                    CONF_AUTH_CODE: user_input[CONF_AUTH_CODE],
+                    CONF_DEVICE_ID: info[CONF_DEVICE_ID],
+                    CONF_MAC: info[CONF_MAC],
+                }
+                self.hass.config_entries.async_update_entry(entry, data=new_data)
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_abort(reason="reconfigure_successful")
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USER_ID, default=entry.data.get(CONF_USER_ID, "")): str,
+                    vol.Required(CONF_AUTH_CODE, default=entry.data.get(CONF_AUTH_CODE, "")): str,
+                }
+            ),
+            errors=errors,
+        )
+
+
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage the options."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            try:
+                data = {
+                    CONF_USER_ID: user_input[CONF_USER_ID],
+                    CONF_AUTH_CODE: user_input[CONF_AUTH_CODE],
+                }
+                info = await validate_input(self.hass, data)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+            else:
+                new_data = {
+                    CONF_USER_ID: user_input[CONF_USER_ID],
+                    CONF_AUTH_CODE: user_input[CONF_AUTH_CODE],
+                    CONF_DEVICE_ID: info[CONF_DEVICE_ID],
+                    CONF_MAC: info[CONF_MAC],
+                }
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+                return self.async_create_entry(title="", data={})
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_USER_ID,
+                        default=self.config_entry.data.get(CONF_USER_ID, ""),
+                    ): str,
+                    vol.Required(
+                        CONF_AUTH_CODE,
+                        default=self.config_entry.data.get(CONF_AUTH_CODE, ""),
+                    ): str,
+                }
+            ),
             errors=errors,
         )
 
