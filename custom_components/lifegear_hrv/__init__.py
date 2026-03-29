@@ -6,7 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, CONF_USER_ID, CONF_AUTH_CODE, CONF_LOGIN_METHOD, LOGIN_METHOD_MANUAL
+from .const import DOMAIN, CONF_USER_ID, CONF_AUTH_CODE, CONF_LOGIN_METHOD, LOGIN_METHOD_MANUAL, CONF_LOCAL_SERVER
 from .coordinator import LifegearHRVCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -23,6 +23,11 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
         new_data = {**config_entry.data, CONF_LOGIN_METHOD: LOGIN_METHOD_MANUAL}
         hass.config_entries.async_update_entry(config_entry, data=new_data, version=2)
         _LOGGER.info("Migration to version 2 successful")
+
+    if config_entry.version == 2:
+        # v2 -> v3: no data changes needed (cloud entries stay as-is)
+        hass.config_entries.async_update_entry(config_entry, version=3)
+        _LOGGER.info("Migration to version 3 successful")
 
     return True
 

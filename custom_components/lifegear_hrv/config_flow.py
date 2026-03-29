@@ -21,8 +21,10 @@ from .const import (
     CONF_ACCOUNT,
     CONF_PASSWORD,
     CONF_LOGIN_METHOD,
+    CONF_LOCAL_SERVER,
     LOGIN_METHOD_CREDENTIALS,
     LOGIN_METHOD_MANUAL,
+    LOGIN_METHOD_LOCAL,
     API_GET_STATUS,
     HEADERS,
 )
@@ -91,7 +93,7 @@ async def validate_credentials(hass: HomeAssistant, data: dict[str, Any]) -> dic
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Lifegear HRV."""
 
-    VERSION = 2
+    VERSION = 3
 
     @staticmethod
     @callback
@@ -104,22 +106,73 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Handle login method selection."""
         if user_input is not None:
-            if user_input[CONF_LOGIN_METHOD] == LOGIN_METHOD_CREDENTIALS:
+            method = user_input[CONF_LOGIN_METHOD]
+            if method == LOGIN_METHOD_CREDENTIALS:
                 return await self.async_step_credentials()
+            if method == LOGIN_METHOD_LOCAL:
+                return await self.async_step_local()
             return await self.async_step_manual()
 
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_LOGIN_METHOD, default=LOGIN_METHOD_CREDENTIALS): vol.In(
+                    vol.Required(CONF_LOGIN_METHOD, default=LOGIN_METHOD_LOCAL): vol.In(
                         {
-                            LOGIN_METHOD_CREDENTIALS: "帳號密碼登入",
-                            LOGIN_METHOD_MANUAL: "手動輸入 (u_id + AuthCode)",
+                            LOGIN_METHOD_LOCAL: "本地控制 (m8_local_server.py，無需雲端)",
+                            LOGIN_METHOD_CREDENTIALS: "帳號密碼登入 (雲端)",
+                            LOGIN_METHOD_MANUAL: "手動輸入 u_id + AuthCode (雲端)",
                         }
                     ),
                 }
             ),
+        )
+
+    async def async_step_local(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle local control setup."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            local_url = user_input[CONF_LOCAL_SERVER].rstrip("/")
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{local_url}/api/status",
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as response:
+                        data = await response.json()
+                mac = user_input.get(CONF_MAC, "").strip().upper().replace(":", "")
+                device_id = user_input.get(CONF_DEVICE_ID, "").strip()
+                if not mac:
+                    # Try to get MAC from state
+                    state = data.get("state", {})
+                    mac = ""
+                entry_data = {
+                    CONF_LOGIN_METHOD: LOGIN_METHOD_LOCAL,
+                    CONF_LOCAL_SERVER: local_url,
+                    CONF_MAC: mac,
+                    CONF_DEVICE_ID: device_id,
+                }
+                return self.async_create_entry(title="樂奇全熱交換機 (本地)", data=entry_data)
+            except Exception as err:
+                _LOGGER.error("Cannot connect to local server: %s", err)
+                errors["base"] = "cannot_connect"
+
+        return self.async_show_form(
+            step_id="local",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_LOCAL_SERVER, default="http://192.168.50.101:8765"): str,
+                    vol.Optional(CONF_MAC, default=""): str,
+                    vol.Optional(CONF_DEVICE_ID, default=""): str,
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "info": "先在 Mac 上執行 m8_local_server.py，並設定 M8 的 DNS 指向 Mac IP"
+            },
         )
 
     async def async_step_credentials(

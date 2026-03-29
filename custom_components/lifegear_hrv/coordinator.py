@@ -21,7 +21,9 @@ from .const import (
     CONF_ACCOUNT,
     CONF_PASSWORD,
     CONF_LOGIN_METHOD,
+    CONF_LOCAL_SERVER,
     LOGIN_METHOD_CREDENTIALS,
+    LOGIN_METHOD_LOCAL,
     API_GET_STATUS,
     API_SET_CONTROL,
     HEADERS,
@@ -36,17 +38,23 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize."""
         self.entry = entry
-        self.user_id = entry.data[CONF_USER_ID]
-        self.auth_code = entry.data[CONF_AUTH_CODE]
-        self.device_id = entry.data[CONF_DEVICE_ID]
-        self.mac = entry.data[CONF_MAC]
+        self.mac = entry.data.get(CONF_MAC, "")
+        self.device_id = entry.data.get(CONF_DEVICE_ID, "")
+        self._local_mode = entry.data.get(CONF_LOGIN_METHOD) == LOGIN_METHOD_LOCAL
+        self._local_server = entry.data.get(CONF_LOCAL_SERVER, "").rstrip("/")
+
+        # Cloud-mode fields
+        self.user_id = entry.data.get(CONF_USER_ID, "")
+        self.auth_code = entry.data.get(CONF_AUTH_CODE, "")
         self._relogin_attempted = False
 
+        # Local mode polls more frequently (device pushes ~every 3 s)
+        interval = timedelta(seconds=5) if self._local_mode else timedelta(seconds=30)
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=30),
+            update_interval=interval,
         )
 
     async def _async_relogin(self) -> bool:
@@ -75,8 +83,50 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
             _LOGGER.error("Re-login failed: %s", err)
             return False
 
+    async def _async_update_local(self) -> dict[str, Any]:
+        """Fetch data from local server REST API."""
+        url = f"{self._local_server}/api/status"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as response:
+                    raw = await response.json()
+
+            sensor = raw.get("sensor", {})
+            state  = raw.get("state",  {})
+
+            ispower_raw = state.get("ispower")
+            if ispower_raw is None:
+                ispower = None
+            else:
+                ispower = 1 if ispower_raw else 0
+
+            return {
+                "md_co2":       str(sensor["co2"])   if sensor.get("co2")   is not None else "",
+                "md_pm25":      str(sensor["pm25"])  if sensor.get("pm25")  is not None else "",
+                "md_temp":      str(sensor["temp"])  if sensor.get("temp")  is not None else "",
+                "md_rh":        str(sensor["rh"])    if sensor.get("rh")    is not None else "",
+                "md_speed":     str(state["speed"])  if state.get("speed")  is not None else "",
+                "md_mode":      str(state["mode"])   if state.get("mode")   is not None else "",
+                "md_ispower":   ispower,
+                "md_isconnect": 1,
+                "mdid":         self.device_id,
+                "md_mac":       self.mac,
+                # local-mode extras
+                "_local": True,
+                "_sensor_ts": sensor.get("last_update"),
+                "_state_ts":  state.get("last_update"),
+            }
+        except Exception as err:
+            raise UpdateFailed(f"Local server error ({url}): {err}")
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API."""
+        if self._local_mode:
+            return await self._async_update_local()
+
         try:
             async with aiohttp.ClientSession() as session:
                 payload = f"u_id={self.user_id}&AuthCode={self.auth_code}"
@@ -119,6 +169,37 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
         except Exception as err:
             raise UpdateFailed(f"Error communicating with API: {err}")
 
+    async def _async_set_control_local(
+        self,
+        ispower: int | None,
+        mode: int | None,
+        speed: int | None,
+    ) -> bool:
+        """Send command to local server REST API."""
+        current_data = self.data or {}
+        cmd = {
+            "ispower": ispower if ispower is not None else int(current_data.get("md_ispower") or 1),
+            "mode":    mode    if mode    is not None else int(current_data.get("md_mode")    or 3),
+            "speed":   speed   if speed   is not None else int(current_data.get("md_speed")   or 1),
+        }
+        url = f"{self._local_server}/api/command"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=cmd,
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as response:
+                    result = await response.json()
+                    if result.get("ok"):
+                        _LOGGER.debug("Local command sent: %s", cmd)
+                        await asyncio.sleep(0.5)
+                        await self.async_request_refresh()
+                        return True
+        except Exception as err:
+            _LOGGER.error("Local command error: %s", err)
+        return False
+
     async def async_set_control(
         self,
         ispower: int | None = None,
@@ -127,6 +208,9 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
         max_retries: int = 3,
     ) -> bool:
         """Send control command to device."""
+        if self._local_mode:
+            return await self._async_set_control_local(ispower, mode, speed)
+
         current_data = self.data or {}
 
         # 使用當前數據作為基礎
