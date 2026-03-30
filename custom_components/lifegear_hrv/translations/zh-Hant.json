@@ -26,7 +26,7 @@
       },
       "local": {
         "title": "本地控制設定",
-        "description": "設定本地伺服器資訊\n\n步驟：\n1. 在 Mac 執行 `sudo python3 m8_local_server.py`\n2. M8 Web UI（192.168.10.248，admin/admin）→ STA設置 → DNS服务器地址 設為 Mac IP → 儲存\n3. 重啟 M8\n4. 填入以下資訊",
+        "description": "設定本地伺服器資訊\n\n步驟：\n1. 在伺服器主機執行 `sudo python3 m8_local_server.py`\n2. M8 Web UI（admin/admin）→ STA設置 → DNS服务器地址 設為伺服器 IP → 儲存\n3. 重啟 M8\n4. 填入以下資訊",
         "data": {
           "local_server_url": "本地伺服器網址",
           "mac": "裝置 MAC（可選，格式 34EAE7B5741B）",

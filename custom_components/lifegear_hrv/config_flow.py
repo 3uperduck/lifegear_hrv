@@ -164,7 +164,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="local",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_LOCAL_SERVER, default="http://192.168.50.101:8765"): str,
+                    vol.Required(CONF_LOCAL_SERVER, default="http://192.168.1.x:8765"): str,
                     vol.Optional(CONF_MAC, default=""): str,
                     vol.Optional(CONF_DEVICE_ID, default=""): str,
                 }
