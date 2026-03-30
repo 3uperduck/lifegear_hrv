@@ -17,7 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MODE_NAMES, CONF_MAC
+from .const import DOMAIN, MODE_NAMES, CONF_MAC, normalize_mode
 from .coordinator import LifegearHRVCoordinator
 
 
@@ -83,7 +83,8 @@ class LifegearHRVCO2Sensor(LifegearHRVBaseSensor):
     def native_value(self):
         """Return the state."""
         if self.coordinator.data:
-            return int(self.coordinator.data.get("md_co2", 0))
+            val = self.coordinator.data.get("md_co2", 0)
+            return int(val) if val != "" else None
         return None
 
 
@@ -104,7 +105,8 @@ class LifegearHRVPM25Sensor(LifegearHRVBaseSensor):
     def native_value(self):
         """Return the state."""
         if self.coordinator.data:
-            return int(self.coordinator.data.get("md_pm25", 0))
+            val = self.coordinator.data.get("md_pm25", 0)
+            return int(val) if val != "" else None
         return None
 
 
@@ -125,7 +127,8 @@ class LifegearHRVTemperatureSensor(LifegearHRVBaseSensor):
     def native_value(self):
         """Return the state."""
         if self.coordinator.data:
-            return int(self.coordinator.data.get("md_temp", 0))
+            val = self.coordinator.data.get("md_temp", 0)
+            return int(val) if val != "" else None
         return None
 
 
@@ -146,7 +149,8 @@ class LifegearHRVHumiditySensor(LifegearHRVBaseSensor):
     def native_value(self):
         """Return the state."""
         if self.coordinator.data:
-            return int(self.coordinator.data.get("md_rh", 0))
+            val = self.coordinator.data.get("md_rh", 0)
+            return int(val) if val != "" else None
         return None
 
 
@@ -165,7 +169,8 @@ class LifegearHRVSpeedSensor(LifegearHRVBaseSensor):
     def native_value(self):
         """Return the state."""
         if self.coordinator.data:
-            return int(self.coordinator.data.get("md_speed", 0))
+            val = self.coordinator.data.get("md_speed", 0)
+            return int(val) if val != "" else None
         return None
 
 
@@ -184,6 +189,8 @@ class LifegearHRVModeSensor(LifegearHRVBaseSensor):
     def native_value(self):
         """Return the state."""
         if self.coordinator.data:
-            mode = int(self.coordinator.data.get("md_mode", 1))
-            return MODE_NAMES.get(mode, "未知")
+            val = self.coordinator.data.get("md_mode", 1)
+            if val == "":
+                return None
+            return MODE_NAMES.get(normalize_mode(val), "未知")
         return None

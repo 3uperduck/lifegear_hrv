@@ -146,7 +146,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 mac = user_input.get(CONF_MAC, "").strip().upper().replace(":", "")
                 device_id = user_input.get(CONF_DEVICE_ID, "").strip()
                 if not mac:
-                    # Try to get MAC from state
                     state = data.get("state", {})
                     mac = ""
                 entry_data = {
@@ -155,6 +154,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_MAC: mac,
                     CONF_DEVICE_ID: device_id,
                 }
+                # Optional cloud credentials for mode control via getDeviceMod.asp
+                account = user_input.get(CONF_ACCOUNT, "").strip()
+                password = user_input.get(CONF_PASSWORD, "").strip()
+                if account and password:
+                    entry_data[CONF_ACCOUNT] = account
+                    entry_data[CONF_PASSWORD] = password
                 return self.async_create_entry(title="樂奇全熱交換機 (本地)", data=entry_data)
             except Exception as err:
                 _LOGGER.error("Cannot connect to local server: %s", err)
@@ -167,12 +172,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_LOCAL_SERVER, default="http://192.168.1.x:8765"): str,
                     vol.Optional(CONF_MAC, default=""): str,
                     vol.Optional(CONF_DEVICE_ID, default=""): str,
+                    vol.Optional(CONF_ACCOUNT, default=""): str,
+                    vol.Optional(CONF_PASSWORD, default=""): str,
                 }
             ),
             errors=errors,
-            description_placeholders={
-                "info": "先在 Mac 上執行 m8_local_server.py，並設定 M8 的 DNS 指向 Mac IP"
-            },
         )
 
     async def async_step_credentials(
@@ -323,11 +327,24 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Manage the options."""
         errors: dict[str, str] = {}
-        is_credentials = self.config_entry.data.get(CONF_LOGIN_METHOD) == LOGIN_METHOD_CREDENTIALS
+        login_method = self.config_entry.data.get(CONF_LOGIN_METHOD)
+        is_credentials = login_method == LOGIN_METHOD_CREDENTIALS
+        is_local = login_method == LOGIN_METHOD_LOCAL
 
         if user_input is not None:
             try:
-                if is_credentials:
+                if is_local:
+                    # Local mode: just update account/password (no validation needed)
+                    new_data = {**self.config_entry.data}
+                    account = user_input.get(CONF_ACCOUNT, "").strip()
+                    password = user_input.get(CONF_PASSWORD, "").strip()
+                    if account and password:
+                        new_data[CONF_ACCOUNT] = account
+                        new_data[CONF_PASSWORD] = password
+                    else:
+                        new_data.pop(CONF_ACCOUNT, None)
+                        new_data.pop(CONF_PASSWORD, None)
+                elif is_credentials:
                     info = await validate_credentials(self.hass, user_input)
                     new_data = {
                         CONF_LOGIN_METHOD: LOGIN_METHOD_CREDENTIALS,
@@ -364,7 +381,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 )
                 return self.async_create_entry(title="", data={})
 
-        if is_credentials:
+        if is_local:
+            schema = vol.Schema(
+                {
+                    vol.Optional(CONF_ACCOUNT, default=self.config_entry.data.get(CONF_ACCOUNT, "")): str,
+                    vol.Optional(CONF_PASSWORD, default=self.config_entry.data.get(CONF_PASSWORD, "")): str,
+                }
+            )
+        elif is_credentials:
             schema = vol.Schema(
                 {
                     vol.Required(CONF_ACCOUNT, default=self.config_entry.data.get(CONF_ACCOUNT, "")): str,

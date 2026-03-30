@@ -57,8 +57,10 @@ class LifegearHRVSpeedNumber(CoordinatorEntity, NumberEntity):
     def native_value(self) -> float | None:
         """Return current speed."""
         if self.coordinator.data:
-            speed = int(self.coordinator.data.get("md_speed", 1))
-            return max(1, speed)  # 確保最小值為 1
+            val = self.coordinator.data.get("md_speed")
+            if val is None:
+                return None
+            return max(1, int(val))
         return None
 
     async def async_set_native_value(self, value: float) -> None:

@@ -46,4 +46,13 @@ MODE_NAMES = {
     MODE_HRV: "全熱",
 }
 
+
+def normalize_mode(raw) -> int:
+    """Convert M8 internal mode (17/18/19) to cloud mode (1/2/3)."""
+    try:
+        m = int(raw)
+        return m - 16 if m >= 17 else m
+    except (TypeError, ValueError):
+        return 3
+
 MODE_NAME_TO_VALUE = {v: k for k, v in MODE_NAMES.items()}

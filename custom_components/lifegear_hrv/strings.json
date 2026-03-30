@@ -26,11 +26,13 @@
       },
       "local": {
         "title": "本地控制設定",
-        "description": "設定本地伺服器資訊\n\n步驟：\n1. 在伺服器主機執行 m8_local_server.py（需 sudo）\n2. M8 Web UI（admin/admin）→ STA設置 → DNS服务器地址 設為伺服器 IP\n3. 重啟 M8\n4. 填入以下資訊",
+        "description": "設定本地伺服器資訊\n\n步驟：\n1. 在伺服器主機執行 m8_local_server.py（需 sudo）\n2. M8 Web UI（admin/admin）→ STA設置 → DNS服务器地址 設為伺服器 IP\n3. 重啟 M8\n4. 填入以下資訊\n\n💡 帳號密碼為選填，填寫後可透過雲端 API 控制模式切換（更可靠）",
         "data": {
           "local_server_url": "本地伺服器網址",
-          "mac": "裝置 MAC（可選，格式 AABBCCDDEEFF，12個十六進位字元）",
-          "device_id": "裝置 ID（可選）"
+          "mac": "裝置 MAC（可選）",
+          "device_id": "裝置 ID（可選）",
+          "account": "樂奇 App 帳號（選填，用於模式控制）",
+          "password": "樂奇 App 密碼（選填）"
         }
       },
       "reconfigure": {
@@ -60,8 +62,8 @@
         "title": "更新認證資訊",
         "description": "請輸入新的帳號資訊",
         "data": {
-          "account": "帳號",
-          "password": "密碼",
+          "account": "樂奇 App 帳號",
+          "password": "樂奇 App 密碼",
           "user_id": "使用者 ID (u_id)",
           "auth_code": "認證碼 (AuthCode)"
         }
