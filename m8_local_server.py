@@ -4,21 +4,27 @@
 Replaces m8.daguan-tech.com.tw for the M8 device, providing:
   - Local handling of all 4 device HTTP endpoints (port 80)
   - REST API for HA integration to read sensor data / send commands (port 8765)
+  - Built-in DNS server to redirect M8 traffic (port 53)
   - No cloud dependency
 
-M8 DNS setup: set DNS in M8 Web UI (admin/admin)
-  STA設置 → DNS服务器地址 → set to this machine's IP
+Network setup:
+  Option A: UDM Pro DNAT rule — redirect M8's port 53 UDP to this machine
+  Option B: Set DNS in M8 Web UI (admin/admin) STA設置 → DNS服务器地址
 
 Device AES: key=MD5("LifeGear85ls6IsY"), IV=8a39b1993ec8c3dcde502975fd292c7b, CBC+PKCS7
+Cloud command format (from reverse engineering):
+  {"IsPower":bool,"Mode":"str","Speed":"str","IsReServe":bool,
+   "STime":"str","ETime":"str","Version":"str","IsUpdate":bool,"FirmwareURL":"str"}
 """
 import base64
 import hashlib
 import json
 import logging
 import socket
+import struct
 import threading
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 try:
@@ -63,7 +69,6 @@ _device_state: dict = {
     "last_update": None,
 }
 
-# Pending command queued by HA.  None = no pending command (echo device state).
 _pending_command: dict | None = None
 
 
@@ -80,7 +85,7 @@ def _set_sensor(data: dict) -> None:
 
 def _set_device_state(data: dict) -> None:
     with _lock:
-        _device_state["ispower"] = data.get("Ispower") or data.get("IsPower")
+        _device_state["ispower"] = data.get("Ispower") if "Ispower" in data else data.get("IsPower")
         _device_state["mode"]    = data.get("Mode")
         _device_state["speed"]   = data.get("Speed")
         _device_state["last_update"] = datetime.now().isoformat()
@@ -88,45 +93,42 @@ def _set_device_state(data: dict) -> None:
              _device_state["ispower"], _device_state["mode"], _device_state["speed"])
 
 
-def _build_command_payload(mac: str) -> str:
+def _build_command_payload() -> str:
     """Return encrypted command JSON for GetDeviceData response.
 
-    If there's a pending HA command, use it (and clear it).
-    Otherwise echo the device's reported state so it stays put.
+    Uses cloud-compatible format discovered via reverse engineering.
+    If there's a pending HA command, send it repeatedly until device confirms.
+    Otherwise echo a safe default state.
     """
     global _pending_command
     with _lock:
         cmd = _pending_command
-        _pending_command = None
 
     if cmd:
         ispower = bool(cmd.get("ispower", 1))
-        mode    = str(cmd.get("mode",  _device_state.get("mode") or 3))
-        speed   = str(cmd.get("speed", _device_state.get("speed") or 1))
-        log.info("[Cmd→Device] Power=%s Mode=%s Speed=%s", ispower, mode, speed)
+        mode    = int(cmd.get("mode", 3))
+        speed   = int(cmd.get("speed", 1))
+        dev_speed = _device_state.get("speed")
+        if dev_speed == speed:
+            _pending_command = None
+            log.info("[Cmd✓] Device confirmed: Power=%s Mode=%s Speed=%s", ispower, mode, speed)
+        else:
+            log.info("[Cmd→Device] Power=%s Mode=%s Speed=%s", ispower, mode, speed)
     else:
-        # Echo current device state; if unknown, leave device as-is (power on, mode 3)
         ispower = bool(_device_state.get("ispower") if _device_state.get("ispower") is not None else True)
-        mode    = str(_device_state.get("mode") or 3)
-        speed   = str(_device_state.get("speed") or 1)
+        mode    = 3
+        speed   = _device_state.get("speed") or 1
 
     payload = {
-        "Mac":       mac,
-        "Date":      datetime.now().strftime("%Y-%m-%d"),
-        "IsPower":   ispower,
-        "Mode":      mode,
-        "Speed":     speed,
-        "Co2":       "0",
-        "PM25":      "0",
-        "Temp":      "0",
-        "RH":        "0",
-        "IsReServe": False,
-        "STime":     "0",
-        "ETime":     "0",
-        "IP":        None,
-        "IsConnect": True,
-        "Version":   "1.0.16",
-        "IsUpdate":  False,
+        "IsPower":     ispower,
+        "Mode":        str(mode),
+        "Speed":       str(speed),
+        "IsReServe":   False,
+        "STime":       "0",
+        "ETime":       "0",
+        "Version":     "1.0.16",
+        "IsUpdate":    False,
+        "FirmwareURL": "http://m8.daguan-tech.com.tw/Firmware/LIFEGEAR_v1.0.16.bin",
     }
     return device_encrypt(json.dumps(payload, separators=(",", ":")))
 
@@ -146,8 +148,10 @@ def _parse_form(body_bytes: bytes) -> dict:
 
 class M8Handler(BaseHTTPRequestHandler):
     """Handles all requests from the M8 device on port 80."""
+    protocol_version = "HTTP/1.1"
+    timeout = 30
 
-    def log_message(self, fmt, *args):  # suppress default access log
+    def log_message(self, fmt, *args):
         pass
 
     def _read_body(self) -> bytes:
@@ -188,35 +192,19 @@ class M8Handler(BaseHTTPRequestHandler):
             data = device_decrypt(form.get("RA", ""))
             if data:
                 _set_sensor(data)
-            self._send_json({"ErrorMessage": None, "ResponseCode": 1000, "data": None})
+            self._send_json({"ErrorMessage": "OK", "ResponseCode": 200, "data": None})
 
         elif path == "/api/App/PostDeviceData":
             data = device_decrypt(form.get("RA", ""))
             if data:
                 _set_device_state(data)
-            self._send_json({"ErrorMessage": None, "ResponseCode": 1000, "data": None})
+            self._send_json({"ErrorMessage": "OK", "ResponseCode": 200, "data": None})
 
         elif path == "/api/App/GetDeviceData":
-            mac_enc = form.get("Mac", "")
-            mac_data = device_decrypt(mac_enc)
-            mac = mac_data if isinstance(mac_data, str) else (
-                str(mac_data) if mac_data else "UNKNOWN"
-            )
-            # mac_data from decrypting a single block returns the string directly
-            try:
-                raw = base64.b64decode(mac_enc)
-                cipher = AES.new(DEVICE_KEY, AES.MODE_CBC, DEVICE_IV)
-                pt = cipher.decrypt(raw)
-                from Crypto.Util.Padding import unpad as _unpad
-                mac = _unpad(pt, 16).decode("utf-8")
-            except Exception:
-                mac = "UNKNOWN"
-
-            cmd_enc = _build_command_payload(mac)
-            self._send_json({"ErrorMessage": None, "ResponseCode": 1000, "data": cmd_enc})
+            cmd_enc = _build_command_payload()
+            self._send_json({"ErrorMessage": "OK", "ResponseCode": 200, "data": cmd_enc})
 
         else:
-            # Unknown device endpoint
             log.warning("Unknown POST: %s", path)
             self._send_json({"ErrorMessage": "Not handled", "ResponseCode": 9999, "data": None})
 
@@ -295,7 +283,6 @@ REAL_DNS = "8.8.8.8"
 
 
 def _build_dns_response(data: bytes, redirect_ip: str) -> bytes | None:
-    import struct
     tid = data[:2]
     offset = 12
     labels = []
@@ -310,7 +297,6 @@ def _build_dns_response(data: bytes, redirect_ip: str) -> bytes | None:
     domain = b".".join(labels).lower()
 
     if domain == CAPTURE_DOMAIN.lower() and qtype == 1:
-        # Return redirect IP for m8.daguan-tech.com.tw
         resp = tid + b"\x81\x80" + data[4:6] + b"\x00\x01\x00\x00\x00\x00"
         resp += data[12:qname_end + 4]
         resp += b"\xc0\x0c\x00\x01\x00\x01"
@@ -319,7 +305,6 @@ def _build_dns_response(data: bytes, redirect_ip: str) -> bytes | None:
         resp += socket.inet_aton(redirect_ip)
         return resp
     else:
-        # Forward all other DNS queries upstream
         try:
             fwd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             fwd.settimeout(5)
@@ -352,8 +337,7 @@ if __name__ == "__main__":
     log.info("=== M8 Local Control Server v3.0.0 ===")
     log.info("Local IP: %s", local_ip)
     log.info("")
-    log.info("Setup: M8 Web UI → STA設置 → DNS服务器地址 → %s", local_ip)
-    log.info("       Then reboot M8")
+    log.info("Setup: UDM Pro DNAT rule or M8 Web UI DNS → %s", local_ip)
     log.info("")
     log.info("HA integration: set local_server_url = http://%s:8765", local_ip)
     log.info("")
@@ -361,12 +345,12 @@ if __name__ == "__main__":
     dns_thread = threading.Thread(target=_dns_server, args=(local_ip,), daemon=True)
     dns_thread.start()
 
-    rest_server = HTTPServer(("0.0.0.0", 8765), RestHandler)
+    rest_server = ThreadingHTTPServer(("0.0.0.0", 8765), RestHandler)
     rest_thread = threading.Thread(target=rest_server.serve_forever, daemon=True)
     rest_thread.start()
     log.info("[REST API] Listening on 0.0.0.0:8765")
 
-    device_server = HTTPServer(("0.0.0.0", 80), M8Handler)
+    device_server = ThreadingHTTPServer(("0.0.0.0", 80), M8Handler)
     log.info("[Device]   Listening on 0.0.0.0:80")
     log.info(">>> Ready! <<<")
     log.info("")
