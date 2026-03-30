@@ -289,6 +289,64 @@ def _get_local_ip() -> str:
         s.close()
 
 
+# ── DNS Server ─────────────────────────────────────────────────────────────────
+CAPTURE_DOMAIN = b"m8.daguan-tech.com.tw"
+REAL_DNS = "8.8.8.8"
+
+
+def _build_dns_response(data: bytes, redirect_ip: str) -> bytes | None:
+    import struct
+    tid = data[:2]
+    offset = 12
+    labels = []
+    while data[offset] != 0:
+        length = data[offset]
+        offset += 1
+        labels.append(data[offset:offset + length])
+        offset += length
+    offset += 1
+    qname_end = offset
+    qtype = struct.unpack("!H", data[offset:offset + 2])[0]
+    domain = b".".join(labels).lower()
+
+    if domain == CAPTURE_DOMAIN.lower() and qtype == 1:
+        # Return redirect IP for m8.daguan-tech.com.tw
+        resp = tid + b"\x81\x80" + data[4:6] + b"\x00\x01\x00\x00\x00\x00"
+        resp += data[12:qname_end + 4]
+        resp += b"\xc0\x0c\x00\x01\x00\x01"
+        resp += struct.pack("!I", 60)
+        resp += b"\x00\x04"
+        resp += socket.inet_aton(redirect_ip)
+        return resp
+    else:
+        # Forward all other DNS queries upstream
+        try:
+            fwd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            fwd.settimeout(5)
+            fwd.sendto(data, (REAL_DNS, 53))
+            return fwd.recv(4096)
+        except Exception as e:
+            log.error("[DNS] Forward failed: %s", e)
+            return tid + b"\x81\x82" + data[4:]
+        finally:
+            fwd.close()
+
+
+def _dns_server(redirect_ip: str) -> None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", 53))
+    log.info("[DNS]      Listening on 0.0.0.0:53")
+    while True:
+        try:
+            data, addr = sock.recvfrom(4096)
+            resp = _build_dns_response(data, redirect_ip)
+            if resp:
+                sock.sendto(resp, addr)
+        except Exception as e:
+            log.error("[DNS] Error: %s", e)
+
+
 if __name__ == "__main__":
     local_ip = _get_local_ip()
     log.info("=== M8 Local Control Server v3.0.0 ===")
@@ -299,6 +357,9 @@ if __name__ == "__main__":
     log.info("")
     log.info("HA integration: set local_server_url = http://%s:8765", local_ip)
     log.info("")
+
+    dns_thread = threading.Thread(target=_dns_server, args=(local_ip,), daemon=True)
+    dns_thread.start()
 
     rest_server = HTTPServer(("0.0.0.0", 8765), RestHandler)
     rest_thread = threading.Thread(target=rest_server.serve_forever, daemon=True)
