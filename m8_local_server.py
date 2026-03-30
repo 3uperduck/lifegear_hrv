@@ -6,7 +6,7 @@ Replaces m8.daguan-tech.com.tw for the M8 device, providing:
   - REST API for HA integration to read sensor data / send commands (port 8765)
   - No cloud dependency
 
-M8 DNS setup: set DNS in M8 Web UI (admin/admin)
+M8 DNS setup: set DNS in M8 Web UI (default credentials)
   STA設置 → DNS服务器地址 → set to this machine's IP
 
 Device AES: key=MD5("LifeGear85ls6IsY"), IV=8a39b1993ec8c3dcde502975fd292c7b, CBC+PKCS7
@@ -210,7 +210,7 @@ class M8Handler(BaseHTTPRequestHandler):
                 from Crypto.Util.Padding import unpad as _unpad
                 mac = _unpad(pt, 16).decode("utf-8")
             except Exception:
-                mac = "34EAE7B5741B"
+                mac = "UNKNOWN"
 
             cmd_enc = _build_command_payload(mac)
             self._send_json({"ErrorMessage": None, "ResponseCode": 1000, "data": cmd_enc})
