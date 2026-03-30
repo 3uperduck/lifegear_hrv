@@ -118,9 +118,22 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
                 "_local": True,
                 "_sensor_ts": sensor.get("last_update"),
                 "_state_ts":  state.get("last_update"),
+                "_m8_online": self._is_m8_online(sensor.get("last_update")),
             }
         except Exception as err:
             raise UpdateFailed(f"Local server error ({url}): {err}")
+
+    @staticmethod
+    def _is_m8_online(last_update_iso: str | None) -> bool:
+        """Return True if M8 sent data within the last 60 seconds."""
+        if not last_update_iso:
+            return False
+        from datetime import datetime
+        try:
+            last = datetime.fromisoformat(last_update_iso)
+            return (datetime.now() - last).total_seconds() < 60
+        except Exception:
+            return False
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API."""
