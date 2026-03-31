@@ -1,0 +1,21 @@
+{
+  "name": "M8 Local Server",
+  "version": "3.2.0",
+  "slug": "m8_local_server",
+  "description": "Lifegear M8 HRV local control server (MitM proxy)",
+  "arch": ["aarch64", "amd64", "armhf", "armv7", "i386"],
+  "ports": {
+    "80/tcp": null,
+    "8765/tcp": 8765
+  },
+  "ports_description": {
+    "80/tcp": "M8 device HTTP endpoint (use DNAT to redirect M8 traffic here)",
+    "8765/tcp": "REST API for HA integration"
+  },
+  "host_network": true,
+  "options": {},
+  "schema": {},
+  "startup": "application",
+  "boot": "auto",
+  "map": ["config:rw"]
+}
