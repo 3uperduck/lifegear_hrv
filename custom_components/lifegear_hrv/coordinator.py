@@ -171,7 +171,7 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
                 "_local": True,
                 "_sensor_ts": sensor.get("last_update"),
                 "_state_ts":  state.get("last_update"),
-                "_m8_online": self._is_m8_online(sensor.get("last_update")),
+                "_m8_online": self._is_m8_online(sensor.get("last_update"), state.get("last_update")),
                 "_wifi_rssi_pct":   wifi.get("rssi_pct"),
                 "_wifi_rssi_label": wifi.get("rssi_label"),
                 "_wifi_ssid":       wifi.get("ssid"),
@@ -180,16 +180,9 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Local server error ({url}): {err}")
 
     @staticmethod
-    def _is_m8_online(last_update_iso: str | None, timeout_seconds: int = 30) -> bool:
-        """Return True if M8 has sent data recently (within timeout)."""
-        if not last_update_iso:
-            return False
-        try:
-            from datetime import datetime
-            last = datetime.fromisoformat(last_update_iso)
-            return (datetime.now() - last).total_seconds() < timeout_seconds
-        except (ValueError, TypeError):
-            return False
+    def _is_m8_online(sensor_ts: str | None, state_ts: str | None) -> bool:
+        """Return True if M8 has sent data (either sensor or state timestamp exists)."""
+        return bool(sensor_ts) or bool(state_ts)
 
     def _build_status_payload(self) -> str:
         """Build payload for status API (M8 vs M8-E format)."""
