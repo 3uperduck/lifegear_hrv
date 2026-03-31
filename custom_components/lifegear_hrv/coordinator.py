@@ -180,9 +180,51 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Local server error ({url}): {err}")
 
     @staticmethod
-    def _is_m8_online(last_update_iso: str | None) -> bool:
-        """Return True if M8 has sent data (last_update is set)."""
-        return bool(last_update_iso)
+    def _is_m8_online(last_update_iso: str | None, timeout_seconds: int = 30) -> bool:
+        """Return True if M8 has sent data recently (within timeout)."""
+        if not last_update_iso:
+            return False
+        try:
+            from datetime import datetime
+            last = datetime.fromisoformat(last_update_iso)
+            return (datetime.now() - last).total_seconds() < timeout_seconds
+        except (ValueError, TypeError):
+            return False
+
+    def _build_status_payload(self) -> str:
+        """Build payload for status API (M8 vs M8-E format)."""
+        from .const import DEVICE_MODEL_M8E
+        if self._model == DEVICE_MODEL_M8E:
+            # M8-E needs Mac parameter
+            return f"Mac={self.mac}&u_id={self.user_id}&AuthCode={self.auth_code}&ShareMidno="
+        return f"u_id={self.user_id}&AuthCode={self.auth_code}"
+
+    def _normalize_device_data(self, device: dict) -> dict:
+        """Normalize M8-E field names to M8 format for unified entity handling."""
+        from .const import DEVICE_MODEL_M8E
+        if self._model != DEVICE_MODEL_M8E:
+            return device
+        # M8-E uses short names; map to md_ prefixed names for compatibility
+        return {
+            "mdid": device.get("mdid"),
+            "md_mac": device.get("mac"),
+            "md_co2": str(device.get("co2", "")),
+            "md_pm25": str(device.get("pm25", "")),
+            "md_temp": str(device.get("temp", "")),
+            "md_rh": str(device.get("rh", "")),
+            "md_speed": str(device.get("speed", "")),
+            "md_mode": str(device.get("mode", "")),
+            "md_ispower": int(device.get("ispower", 0)),
+            "md_isconnect": int(device.get("isOnLine", 0)),
+        }
+
+    def _extract_device(self, data: list) -> dict | None:
+        """Extract device dict from status API response."""
+        if not data or len(data) == 0:
+            return None
+        entry = data[0]
+        # Both M8 and M8-E getHomeDeviceDetail return device directly
+        return entry if entry.get("mdid") or entry.get("success") is True else None
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API."""
@@ -191,7 +233,7 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
 
         try:
             async with aiohttp.ClientSession() as session:
-                payload = f"u_id={self.user_id}&AuthCode={self.auth_code}"
+                payload = self._build_status_payload()
                 async with session.post(
                     self._api_urls["status"],
                     data=payload,
@@ -200,31 +242,27 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
                 ) as response:
                     text = await response.text()
                     data = json.loads(text)
-                    if data and len(data) > 0:
-                        device = data[0]
-                        if device.get("success") is False or device.get("mdid"):
-                            # If we have device data, reset relogin flag
-                            if device.get("mdid"):
-                                self._relogin_attempted = False
-                                return device
-                            # Auth failure - try relogin
-                            if not self._relogin_attempted:
-                                self._relogin_attempted = True
-                                if await self._async_relogin():
-                                    # Retry with new auth code
-                                    payload2 = f"u_id={self.user_id}&AuthCode={self.auth_code}"
-                                    async with session.post(
-                                        self._api_urls["status"],
-                                        data=payload2,
-                                        headers=HEADERS,
-                                        timeout=aiohttp.ClientTimeout(total=10),
-                                    ) as response2:
-                                        text2 = await response2.text()
-                                        data2 = json.loads(text2)
-                                        if data2 and len(data2) > 0 and data2[0].get("mdid"):
-                                            self._relogin_attempted = False
-                                            return data2[0]
-                        return device
+                    device = self._extract_device(data)
+                    if device and device.get("mdid"):
+                        self._relogin_attempted = False
+                        return self._normalize_device_data(device)
+                    # Auth failure or no device - try relogin
+                    if not self._relogin_attempted and self._has_cloud_creds:
+                        self._relogin_attempted = True
+                        if await self._async_relogin():
+                            payload2 = self._build_status_payload()
+                            async with session.post(
+                                self._api_urls["status"],
+                                data=payload2,
+                                headers=HEADERS,
+                                timeout=aiohttp.ClientTimeout(total=10),
+                            ) as response2:
+                                text2 = await response2.text()
+                                data2 = json.loads(text2)
+                                device2 = self._extract_device(data2)
+                                if device2 and device2.get("mdid"):
+                                    self._relogin_attempted = False
+                                    return self._normalize_device_data(device2)
                     raise UpdateFailed("No data received")
         except UpdateFailed:
             raise
@@ -236,37 +274,73 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
         target_power: int,
         target_mode: int,
         target_speed: int,
+        power_changed: bool = False,
+        speed_changed: bool = False,
     ) -> bool:
-        """Call getDeviceMod.asp directly with current AuthCode (double-send)."""
+        """Call cloud control API with current AuthCode (double-send)."""
         if not self._auth_valid or not self.auth_code:
             return False
 
-        payload = (
-            f"u_id={self.user_id}&AuthCode={self.auth_code}"
-            f"&mdid={self.device_id}&md_mac={self.mac}"
-            f"&md_ispower={target_power}&md_isconnect=1"
-            f"&md_mode={target_mode}&md_speed={target_speed}"
-            f"&md_isreserve=1&md_stime=255&md_etime=255&md_isUse=1"
-        )
+        from .const import DEVICE_MODEL_M8E
         try:
             async with aiohttp.ClientSession() as session:
-                # Double-send to ensure cloud registers the change
+                if self._model == DEVICE_MODEL_M8E:
+                    # M8-E: mode/speed first, then power
+                    speed_val = str(target_speed) if speed_changed else ""
+                    control_payload = (
+                        f"Mode={target_mode}&AuthCode={self.auth_code}"
+                        f"&Speed={speed_val}&CountDown="
+                        f"&u_id={self.user_id}&ShareMidno="
+                        f"&Function=&Mac={self.mac}&Auto=&Mute="
+                    )
+                else:
+                    # M8: all-in-one control
+                    control_payload = (
+                        f"u_id={self.user_id}&AuthCode={self.auth_code}"
+                        f"&mdid={self.device_id}&md_mac={self.mac}"
+                        f"&md_ispower={target_power}&md_isconnect=1"
+                        f"&md_mode={target_mode}&md_speed={target_speed}"
+                        f"&md_isreserve=1&md_stime=255&md_etime=255&md_isUse=1"
+                    )
+
+                # Double-send control
                 async with session.post(
-                    self._api_urls["control"], data=payload, headers=HEADERS,
+                    self._api_urls["control"], data=control_payload, headers=HEADERS,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as response:
                     text = await response.text()
-                    _LOGGER.debug("Cloud getDeviceMod response (1st): %s", text)
+                    _LOGGER.debug("Cloud control response (1st): %s", text)
                 await asyncio.sleep(0.2)
                 async with session.post(
-                    self._api_urls["control"], data=payload, headers=HEADERS,
+                    self._api_urls["control"], data=control_payload, headers=HEADERS,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as response:
                     text = await response.text()
-                    _LOGGER.debug("Cloud getDeviceMod response (2nd): %s", text)
+                    _LOGGER.debug("Cloud control response (2nd): %s", text)
+
+                # M8-E: send power after mode/speed
+                if self._model == DEVICE_MODEL_M8E and "power" in self._api_urls:
+                    # Auto power on if device is off and user changed mode/speed
+                    current_power = int((self.data or {}).get("md_ispower", 0))
+                    need_power = power_changed or (not current_power and (speed_changed or not power_changed))
+                    if need_power:
+                        await asyncio.sleep(0.3)
+                        power_val = target_power if power_changed else 1
+                        power_payload = (
+                            f"Mac={self.mac}&u_id={self.user_id}"
+                            f"&AuthCode={self.auth_code}"
+                            f"&IsPower={power_val}&ShareMidno="
+                        )
+                        async with session.post(
+                            self._api_urls["power"], data=power_payload, headers=HEADERS,
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        ) as response:
+                            text = await response.text()
+                            _LOGGER.debug("Cloud getDevicePower response: %s", text)
+
                 return True
         except Exception as err:
-            _LOGGER.warning("Cloud getDeviceMod failed: %s", err)
+            _LOGGER.warning("Cloud control failed: %s", err)
             return False
 
     async def _async_set_control_local(
@@ -302,20 +376,24 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.error("Local command error: %s", err)
 
-        # 2) Also call cloud getDeviceMod.asp directly (reliable mode control)
+        # 2) Also call cloud API directly (reliable mode control)
         cloud_ok = False
+        power_changed = ispower is not None
+        speed_changed = speed is not None
         if self._has_cloud_creds:
             cloud_ok = await self._async_cloud_set_control(
-                cmd["ispower"], cmd["mode"], cmd["speed"]
+                cmd["ispower"], cmd["mode"], cmd["speed"],
+                power_changed=power_changed, speed_changed=speed_changed,
             )
             if not cloud_ok and self._auth_valid:
                 _LOGGER.info("Cloud command failed, attempting re-login")
                 if await self._async_relogin():
                     cloud_ok = await self._async_cloud_set_control(
-                        cmd["ispower"], cmd["mode"], cmd["speed"]
+                        cmd["ispower"], cmd["mode"], cmd["speed"],
+                        power_changed=power_changed, speed_changed=speed_changed,
                     )
             if cloud_ok:
-                _LOGGER.debug("Cloud getDeviceMod ok: mode=%s speed=%s", cmd["mode"], cmd["speed"])
+                _LOGGER.debug("Cloud control ok: mode=%s speed=%s power=%s", cmd["mode"], cmd["speed"], cmd["ispower"])
 
         if addon_ok or cloud_ok:
             await asyncio.sleep(0.5)
@@ -335,56 +413,28 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
             return await self._async_set_control_local(ispower, mode, speed)
 
         current_data = self.data or {}
-
-        # 使用當前數據作為基礎
         target_power = ispower if ispower is not None else int(current_data.get("md_ispower", 1))
         target_mode = mode if mode is not None else int(current_data.get("md_mode", 1))
         target_speed = speed if speed is not None else int(current_data.get("md_speed", 1))
-
-        # 確保風速至少為 1
         if target_speed < 1:
             target_speed = 1
 
-        # 不送感測器數據，避免影響 AQI
-        payload = (
-            f"u_id={self.user_id}&AuthCode={self.auth_code}"
-            f"&mdid={self.device_id}&md_mac={self.mac}"
-            f"&md_ispower={target_power}&md_isconnect=1"
-            f"&md_mode={target_mode}&md_speed={target_speed}"
-            f"&md_isreserve=1&md_stime=255&md_etime=255&md_isUse=1"
-        )
-
+        power_changed = ispower is not None
+        speed_changed = speed is not None
         for attempt in range(max_retries):
             try:
-                async with aiohttp.ClientSession() as session:
-                    # 第一次發送
-                    async with session.post(
-                        self._api_urls["control"],
-                        data=payload,
-                        headers=HEADERS,
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as response:
-                        text = await response.text()
-                        _LOGGER.debug("Request attempt %d response: %s", attempt + 1, text)
+                ok = await self._async_cloud_set_control(
+                    target_power, target_mode, target_speed,
+                    power_changed=power_changed, speed_changed=speed_changed,
+                )
+                if not ok:
+                    _LOGGER.warning("Cloud control returned False (attempt %d)", attempt + 1)
+                    await asyncio.sleep(0.5)
+                    continue
 
-                    # 等待 200ms
-                    await asyncio.sleep(0.2)
-
-                    # 第二次發送確保指令送達
-                    async with session.post(
-                        self._api_urls["control"],
-                        data=payload,
-                        headers=HEADERS,
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as response:
-                        text = await response.text()
-                        _LOGGER.debug("Confirm request response: %s", text)
-
-                # 等待 1 秒後輪詢確認
                 await asyncio.sleep(1.0)
                 await self.async_request_refresh()
 
-                # 驗證設定值
                 new_data = self.data or {}
                 actual_power = int(new_data.get("md_ispower", -1))
                 actual_mode = int(new_data.get("md_mode", -1))
@@ -397,17 +447,15 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
                 if power_ok and mode_ok and speed_ok:
                     _LOGGER.debug("Control command verified successfully")
                     return True
-                else:
-                    _LOGGER.warning(
-                        "Control verification failed (attempt %d/%d): "
-                        "power=%s/%s, mode=%s/%s, speed=%s/%s",
-                        attempt + 1, max_retries,
-                        actual_power, target_power,
-                        actual_mode, target_mode,
-                        actual_speed, target_speed,
-                    )
-                    await asyncio.sleep(0.5)
-
+                _LOGGER.warning(
+                    "Control verification failed (attempt %d/%d): "
+                    "power=%s/%s, mode=%s/%s, speed=%s/%s",
+                    attempt + 1, max_retries,
+                    actual_power, target_power,
+                    actual_mode, target_mode,
+                    actual_speed, target_speed,
+                )
+                await asyncio.sleep(0.5)
             except Exception as err:
                 _LOGGER.error("Error sending control command (attempt %d): %s", attempt + 1, err)
                 await asyncio.sleep(0.5)

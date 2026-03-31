@@ -17,7 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MODE_NAMES, CONF_MAC, normalize_mode
+from .const import DOMAIN, CONF_MAC, CONF_DEVICE_MODEL, DEVICE_MODEL_M8, normalize_mode, get_mode_config
 from .coordinator import LifegearHRVCoordinator
 
 
@@ -184,6 +184,8 @@ class LifegearHRVModeSensor(LifegearHRVBaseSensor):
         """Initialize."""
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{self._mac}_mode_sensor"
+        model = entry.data.get(CONF_DEVICE_MODEL, DEVICE_MODEL_M8)
+        self._mode_names, _ = get_mode_config(model)
 
     @property
     def native_value(self):
@@ -192,5 +194,5 @@ class LifegearHRVModeSensor(LifegearHRVBaseSensor):
             val = self.coordinator.data.get("md_mode", 1)
             if val == "":
                 return None
-            return MODE_NAMES.get(normalize_mode(val), "未知")
+            return self._mode_names.get(normalize_mode(val), "未知")
         return None

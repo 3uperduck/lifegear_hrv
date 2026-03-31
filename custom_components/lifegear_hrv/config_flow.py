@@ -42,9 +42,9 @@ async def validate_manual_input(
     urls = get_api_urls(model)
     try:
         async with aiohttp.ClientSession() as session:
-            payload = f"u_id={data[CONF_USER_ID]}&AuthCode={data[CONF_AUTH_CODE]}"
+            payload = f"u_id={data[CONF_USER_ID]}&AuthCode={data[CONF_AUTH_CODE]}&ShareMidno="
             async with session.post(
-                urls["status"],
+                urls["list"],
                 data=payload,
                 headers=HEADERS,
                 timeout=aiohttp.ClientTimeout(total=10),
@@ -54,13 +54,21 @@ async def validate_manual_input(
                 result = json.loads(text)
 
                 if result and len(result) > 0:
-                    device = result[0]
-                    if device.get("mdid"):
+                    entry = result[0]
+                    # M8-E wraps devices in result[], M8 returns device directly
+                    if model == DEVICE_MODEL_M8E:
+                        devices = entry.get("result", [])
+                        device = devices[0] if devices else {}
+                    else:
+                        device = entry
+                    mdid = device.get("mdid")
+                    if mdid:
                         default_name = "樂奇 M8-E" if model == DEVICE_MODEL_M8E else "樂奇全熱交換機"
+                        mac = device.get("mac") or device.get("md_mac")
                         return {
-                            "title": device.get("md_wisdom") or default_name,
-                            CONF_DEVICE_ID: str(device.get("mdid")),
-                            CONF_MAC: device.get("md_mac"),
+                            "title": device.get("pdname") or device.get("md_wisdom") or default_name,
+                            CONF_DEVICE_ID: str(mdid),
+                            CONF_MAC: mac,
                         }
                 raise InvalidAuth
     except aiohttp.ClientError as err:

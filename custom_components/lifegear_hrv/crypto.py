@@ -103,34 +103,42 @@ async def async_login(
     except json.JSONDecodeError as err:
         raise ConnectionError(f"Invalid response: {err}") from err
 
-    # Step 2: Get device info
-    status_payload = f"u_id={account}&AuthCode={auth_code}"
+    # Step 2: Get device list
+    from .const import DEVICE_MODEL_M8E
+    list_payload = f"u_id={account}&AuthCode={auth_code}&ShareMidno="
     try:
         async with session.post(
-            urls["status"],
-            data=status_payload,
+            urls["list"],
+            data=list_payload,
             headers=HEADERS,
             timeout=aiohttp.ClientTimeout(total=10),
         ) as response:
             text = await response.text()
-            _LOGGER.debug("Device detail response: %s", text)
+            _LOGGER.debug("Device list response: %s", text)
             data = json.loads(text)  # noqa: F811
 
             if not data or len(data) == 0:
                 raise ValueError("No device data received")
 
-            device = data[0]
+            entry = data[0]
+            if model == DEVICE_MODEL_M8E:
+                # M8-E: {"result":[{"mdid":"...","mac":"...","pdname":"..."}]}
+                devices = entry.get("result", [])
+                device = devices[0] if devices else {}
+            else:
+                # M8: [{"mdid":"4249","md_mac":"...","md_wisdom":"..."}]
+                device = entry
             if not device.get("mdid"):
                 raise ValueError("No device found")
 
-            from .const import DEVICE_MODEL_M8E
             default_name = "樂奇 M8-E" if model == DEVICE_MODEL_M8E else "樂奇全熱交換機"
+            mac = device.get("mac") or device.get("md_mac")
             return {
                 "u_id": account,
                 "auth_code": auth_code,
                 CONF_DEVICE_ID: str(device.get("mdid")),
-                CONF_MAC: device.get("md_mac"),
-                "title": device.get("md_wisdom") or default_name,
+                CONF_MAC: mac,
+                "title": device.get("pdname") or device.get("md_wisdom") or default_name,
             }
     except aiohttp.ClientError as err:
         raise ConnectionError(f"Connection error: {err}") from err
