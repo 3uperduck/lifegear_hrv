@@ -26,7 +26,7 @@
       },
       "local": {
         "title": "本地控制設定",
-        "description": "設定本地伺服器資訊\n\n步驟：\n1. 在伺服器主機執行 `sudo python3 m8_local_server.py`\n2. M8 Web UI（admin/admin）→ STA設置 → DNS服务器地址 設為伺服器 IP → 儲存\n3. 重啟 M8\n4. 填入以下資訊\n\n💡 帳號密碼為選填，填寫後可透過雲端 API 控制模式切換（更可靠）",
+        "description": "搭配 m8_local_server add-on 使用\n\n前置需求：\n1. 安裝並啟動 m8_local_server add-on\n2. 設定 DNAT 將 M8 流量導向 HAOS\n\n💡 帳號密碼為選填，填寫後可透過雲端 API 控制模式切換（更可靠）",
         "data": {
           "local_server_url": "本地伺服器網址",
           "mac": "裝置 MAC（可選）",
