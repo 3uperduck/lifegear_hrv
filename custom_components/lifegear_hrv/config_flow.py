@@ -22,23 +22,29 @@ from .const import (
     CONF_PASSWORD,
     CONF_LOGIN_METHOD,
     CONF_LOCAL_SERVER,
+    CONF_DEVICE_MODEL,
     LOGIN_METHOD_CREDENTIALS,
     LOGIN_METHOD_MANUAL,
     LOGIN_METHOD_LOCAL,
-    API_GET_STATUS,
+    DEVICE_MODEL_M8,
+    DEVICE_MODEL_M8E,
     HEADERS,
+    get_api_urls,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 
-async def validate_manual_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+async def validate_manual_input(
+    hass: HomeAssistant, data: dict[str, Any], model: str = DEVICE_MODEL_M8
+) -> dict[str, Any]:
     """Validate manual u_id + AuthCode input."""
+    urls = get_api_urls(model)
     try:
         async with aiohttp.ClientSession() as session:
             payload = f"u_id={data[CONF_USER_ID]}&AuthCode={data[CONF_AUTH_CODE]}"
             async with session.post(
-                API_GET_STATUS,
+                urls["status"],
                 data=payload,
                 headers=HEADERS,
                 timeout=aiohttp.ClientTimeout(total=10),
@@ -50,8 +56,9 @@ async def validate_manual_input(hass: HomeAssistant, data: dict[str, Any]) -> di
                 if result and len(result) > 0:
                     device = result[0]
                     if device.get("mdid"):
+                        default_name = "樂奇 M8-E" if model == DEVICE_MODEL_M8E else "樂奇全熱交換機"
                         return {
-                            "title": device.get("md_wisdom") or "樂奇全熱交換機",
+                            "title": device.get("md_wisdom") or default_name,
                             CONF_DEVICE_ID: str(device.get("mdid")),
                             CONF_MAC: device.get("md_mac"),
                         }
@@ -64,7 +71,9 @@ async def validate_manual_input(hass: HomeAssistant, data: dict[str, Any]) -> di
         raise CannotConnect from err
 
 
-async def validate_credentials(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+async def validate_credentials(
+    hass: HomeAssistant, data: dict[str, Any], model: str = DEVICE_MODEL_M8
+) -> dict[str, Any]:
     """Validate account + password login."""
     from .crypto import async_login
 
@@ -74,9 +83,11 @@ async def validate_credentials(hass: HomeAssistant, data: dict[str, Any]) -> dic
                 session,
                 data[CONF_ACCOUNT],
                 data[CONF_PASSWORD],
+                model=model,
             )
+            default_name = "樂奇 M8-E" if model == DEVICE_MODEL_M8E else "樂奇全熱交換機"
             return {
-                "title": result.get("title", "樂奇全熱交換機"),
+                "title": result.get("title", default_name),
                 CONF_USER_ID: result["u_id"],
                 CONF_AUTH_CODE: result["auth_code"],
                 CONF_DEVICE_ID: result[CONF_DEVICE_ID],
@@ -93,7 +104,11 @@ async def validate_credentials(hass: HomeAssistant, data: dict[str, Any]) -> dic
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Lifegear HRV."""
 
-    VERSION = 3
+    VERSION = 4
+
+    def __init__(self) -> None:
+        """Initialize."""
+        self._model: str = DEVICE_MODEL_M8
 
     @staticmethod
     @callback
@@ -104,8 +119,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle login method selection."""
+        """Handle device model and login method selection."""
         if user_input is not None:
+            self._model = user_input.get(CONF_DEVICE_MODEL, DEVICE_MODEL_M8)
             method = user_input[CONF_LOGIN_METHOD]
             if method == LOGIN_METHOD_CREDENTIALS:
                 return await self.async_step_credentials()
@@ -117,11 +133,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {
+                    vol.Required(CONF_DEVICE_MODEL, default=DEVICE_MODEL_M8): vol.In(
+                        {
+                            DEVICE_MODEL_M8: "智慧果 M8",
+                            DEVICE_MODEL_M8E: "智慧果 M8-E（淨流系統）",
+                        }
+                    ),
                     vol.Required(CONF_LOGIN_METHOD, default=LOGIN_METHOD_LOCAL): vol.In(
                         {
-                            LOGIN_METHOD_LOCAL: "本地控制 (m8_local_server.py，無需雲端)",
-                            LOGIN_METHOD_CREDENTIALS: "帳號密碼登入 (雲端)",
-                            LOGIN_METHOD_MANUAL: "手動輸入 u_id + AuthCode (雲端)",
+                            LOGIN_METHOD_LOCAL: "本地控制（無需雲端）",
+                            LOGIN_METHOD_CREDENTIALS: "帳號密碼登入（雲端）",
+                            LOGIN_METHOD_MANUAL: "手動輸入 u_id + AuthCode（雲端）",
                         }
                     ),
                 }
@@ -150,6 +172,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     mac = ""
                 entry_data = {
                     CONF_LOGIN_METHOD: LOGIN_METHOD_LOCAL,
+                    CONF_DEVICE_MODEL: self._model,
                     CONF_LOCAL_SERVER: local_url,
                     CONF_MAC: mac,
                     CONF_DEVICE_ID: device_id,
@@ -187,7 +210,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                info = await validate_credentials(self.hass, user_input)
+                info = await validate_credentials(self.hass, user_input, model=self._model)
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
@@ -198,6 +221,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 entry_data = {
                     CONF_LOGIN_METHOD: LOGIN_METHOD_CREDENTIALS,
+                    CONF_DEVICE_MODEL: self._model,
                     CONF_ACCOUNT: user_input[CONF_ACCOUNT],
                     CONF_PASSWORD: user_input[CONF_PASSWORD],
                     CONF_USER_ID: info[CONF_USER_ID],
@@ -226,7 +250,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                info = await validate_manual_input(self.hass, user_input)
+                info = await validate_manual_input(self.hass, user_input, model=self._model)
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
@@ -237,6 +261,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 entry_data = {
                     CONF_LOGIN_METHOD: LOGIN_METHOD_MANUAL,
+                    CONF_DEVICE_MODEL: self._model,
                     CONF_USER_ID: user_input[CONF_USER_ID],
                     CONF_AUTH_CODE: user_input[CONF_AUTH_CODE],
                     CONF_DEVICE_ID: info[CONF_DEVICE_ID],

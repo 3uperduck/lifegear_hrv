@@ -3,8 +3,9 @@
     "step": {
       "user": {
         "title": "設定樂奇全熱交換機",
-        "description": "請選擇登入方式",
+        "description": "請選擇設備型號和登入方式",
         "data": {
+          "device_model": "設備型號",
           "login_method": "登入方式"
         }
       },

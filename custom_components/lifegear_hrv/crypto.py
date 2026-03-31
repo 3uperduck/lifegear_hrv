@@ -13,11 +13,11 @@ import aiohttp
 from .const import (
     AES_KEY,
     AES_IV,
-    API_LOGIN,
-    API_GET_STATUS,
     HEADERS,
     CONF_DEVICE_ID,
     CONF_MAC,
+    DEVICE_MODEL_M8,
+    get_api_urls,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,11 +53,13 @@ async def async_login(
     session: aiohttp.ClientSession,
     account: str,
     password: str,
+    model: str = DEVICE_MODEL_M8,
 ) -> dict:
     """Login to Lifegear API and return u_id, auth_code, device_id, mac.
 
     Raises ValueError on auth failure, ConnectionError on network failure.
     """
+    urls = get_api_urls(model)
     auth_code = generate_auth_code()
     _LOGGER.debug("Generated AuthCode: %s", auth_code)
     try:
@@ -80,7 +82,7 @@ async def async_login(
     _LOGGER.debug("Login payload (first 100): %s", login_payload[:100])
     try:
         async with session.post(
-            API_LOGIN,
+            urls["login"],
             data=login_payload.encode("utf-8"),
             headers=HEADERS,
             timeout=aiohttp.ClientTimeout(total=10),
@@ -101,11 +103,11 @@ async def async_login(
     except json.JSONDecodeError as err:
         raise ConnectionError(f"Invalid response: {err}") from err
 
-    # Step 2: Call getHomeDeviceDetail.asp to get device info
+    # Step 2: Get device info
     status_payload = f"u_id={account}&AuthCode={auth_code}"
     try:
         async with session.post(
-            API_GET_STATUS,
+            urls["status"],
             data=status_payload,
             headers=HEADERS,
             timeout=aiohttp.ClientTimeout(total=10),
@@ -121,12 +123,14 @@ async def async_login(
             if not device.get("mdid"):
                 raise ValueError("No device found")
 
+            from .const import DEVICE_MODEL_M8E
+            default_name = "樂奇 M8-E" if model == DEVICE_MODEL_M8E else "樂奇全熱交換機"
             return {
                 "u_id": account,
                 "auth_code": auth_code,
                 CONF_DEVICE_ID: str(device.get("mdid")),
                 CONF_MAC: device.get("md_mac"),
-                "title": device.get("md_wisdom") or "樂奇全熱交換機",
+                "title": device.get("md_wisdom") or default_name,
             }
     except aiohttp.ClientError as err:
         raise ConnectionError(f"Connection error: {err}") from err

@@ -23,12 +23,13 @@ from .const import (
     CONF_PASSWORD,
     CONF_LOGIN_METHOD,
     CONF_LOCAL_SERVER,
+    CONF_DEVICE_MODEL,
     LOGIN_METHOD_CREDENTIALS,
     LOGIN_METHOD_LOCAL,
-    API_GET_STATUS,
-    API_SET_CONTROL,
+    DEVICE_MODEL_M8,
     HEADERS,
     normalize_mode,
+    get_api_urls,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,6 +48,8 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
         self.device_id = entry.data.get(CONF_DEVICE_ID, "")
         self._local_mode = entry.data.get(CONF_LOGIN_METHOD) == LOGIN_METHOD_LOCAL
         self._local_server = entry.data.get(CONF_LOCAL_SERVER, "").strip().rstrip("/")
+        self._model = entry.data.get(CONF_DEVICE_MODEL, DEVICE_MODEL_M8)
+        self._api_urls = get_api_urls(self._model)
 
         # Cloud-mode fields
         self.user_id = entry.data.get(CONF_USER_ID, "")
@@ -88,7 +91,7 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
         try:
             from .crypto import async_login
             async with aiohttp.ClientSession() as session:
-                result = await async_login(session, account, password)
+                result = await async_login(session, account, password, model=self._model)
 
             new_data = {
                 **self.entry.data,
@@ -190,7 +193,7 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
             async with aiohttp.ClientSession() as session:
                 payload = f"u_id={self.user_id}&AuthCode={self.auth_code}"
                 async with session.post(
-                    API_GET_STATUS,
+                    self._api_urls["status"],
                     data=payload,
                     headers=HEADERS,
                     timeout=aiohttp.ClientTimeout(total=10),
@@ -211,7 +214,7 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
                                     # Retry with new auth code
                                     payload2 = f"u_id={self.user_id}&AuthCode={self.auth_code}"
                                     async with session.post(
-                                        API_GET_STATUS,
+                                        self._api_urls["status"],
                                         data=payload2,
                                         headers=HEADERS,
                                         timeout=aiohttp.ClientTimeout(total=10),
@@ -249,14 +252,14 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
             async with aiohttp.ClientSession() as session:
                 # Double-send to ensure cloud registers the change
                 async with session.post(
-                    API_SET_CONTROL, data=payload, headers=HEADERS,
+                    self._api_urls["control"], data=payload, headers=HEADERS,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as response:
                     text = await response.text()
                     _LOGGER.debug("Cloud getDeviceMod response (1st): %s", text)
                 await asyncio.sleep(0.2)
                 async with session.post(
-                    API_SET_CONTROL, data=payload, headers=HEADERS,
+                    self._api_urls["control"], data=payload, headers=HEADERS,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as response:
                     text = await response.text()
@@ -356,7 +359,7 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
                 async with aiohttp.ClientSession() as session:
                     # 第一次發送
                     async with session.post(
-                        API_SET_CONTROL,
+                        self._api_urls["control"],
                         data=payload,
                         headers=HEADERS,
                         timeout=aiohttp.ClientTimeout(total=10),
@@ -369,7 +372,7 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
 
                     # 第二次發送確保指令送達
                     async with session.post(
-                        API_SET_CONTROL,
+                        self._api_urls["control"],
                         data=payload,
                         headers=HEADERS,
                         timeout=aiohttp.ClientTimeout(total=10),

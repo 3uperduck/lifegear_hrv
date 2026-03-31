@@ -12,14 +12,41 @@ CONF_PASSWORD = "password"
 CONF_LOGIN_METHOD = "login_method"
 CONF_LOCAL_SERVER = "local_server_url"
 
+CONF_DEVICE_MODEL = "device_model"
+
 LOGIN_METHOD_CREDENTIALS = "credentials"
 LOGIN_METHOD_MANUAL = "manual"
 LOGIN_METHOD_LOCAL = "local"
 
+DEVICE_MODEL_M8 = "m8"
+DEVICE_MODEL_M8E = "m8e"
+
+# M8 (智慧果) API
 API_BASE_URL = "http://m8.daguan-tech.com.tw/app"
 API_LOGIN = f"{API_BASE_URL}/login.asp"
 API_GET_STATUS = f"{API_BASE_URL}/getHomeDeviceDetail.asp"
 API_SET_CONTROL = f"{API_BASE_URL}/getDeviceMod.asp"
+
+# M8-E (淨流系統) API
+API_BASE_URL_M8E = "http://dm03.e-giant.com.tw/AppV2"
+API_LOGIN_M8E = f"{API_BASE_URL_M8E}/login.asp"
+API_GET_STATUS_M8E = f"{API_BASE_URL_M8E}/getHomeMainDeviceList.asp"
+API_SET_CONTROL_M8E = f"{API_BASE_URL_M8E}/getDeviceMod.asp"
+
+
+def get_api_urls(model: str = DEVICE_MODEL_M8) -> dict:
+    """Return API URLs for the given device model."""
+    if model == DEVICE_MODEL_M8E:
+        return {
+            "login": API_LOGIN_M8E,
+            "status": API_GET_STATUS_M8E,
+            "control": API_SET_CONTROL_M8E,
+        }
+    return {
+        "login": API_LOGIN,
+        "status": API_GET_STATUS,
+        "control": API_SET_CONTROL,
+    }
 
 # AES encryption constants for login (phone app)
 AES_KEY = b"LifeGear85ls6IsY"
