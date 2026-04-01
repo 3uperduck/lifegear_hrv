@@ -20,6 +20,8 @@ LOGIN_METHOD_LOCAL = "local"
 
 DEVICE_MODEL_M8 = "m8"
 DEVICE_MODEL_M8E = "m8e"
+DEVICE_MODEL_BATH_HEATER = "bath_heater"
+DEVICE_MODEL_M8E_SENSOR = "m8e_sensor"
 
 # M8 (智慧果) API
 API_BASE_URL = "http://m8.daguan-tech.com.tw/app"
@@ -34,17 +36,29 @@ API_LIST_DEVICES_M8E = f"{API_BASE_URL_M8E}/getHomeMainDeviceList.asp"
 API_GET_STATUS_M8E = f"{API_BASE_URL_M8E}/getHomeDeviceDetail.asp"
 API_SET_CONTROL_M8E = f"{API_BASE_URL_M8E}/getDeviceFunctionEdit.asp"
 API_SET_POWER_M8E = f"{API_BASE_URL_M8E}/getDevicePower.asp"
+API_GET_DEVICE_LIST_M8E = f"{API_BASE_URL_M8E}/getDeviceList.asp"
+API_GET_DEVICE_FUNCTION_M8E = f"{API_BASE_URL_M8E}/getDeviceFunction.asp"
+API_GET_DEVICE_AIR_INDEX_M8E = f"{API_BASE_URL_M8E}/getDeviceAirIndex.asp"
+API_GET_FILTER_ALARM_M8E = f"{API_BASE_URL_M8E}/getDeviceFilterAlarm.asp"
+API_FILTER_ALARM_RESET_M8E = f"{API_BASE_URL_M8E}/getDeviceFilterAlarmReset.asp"
+API_FILTER_ALARM_EDIT_M8E = f"{API_BASE_URL_M8E}/getDeviceFilterAlarmEdit.asp"
 
 
 def get_api_urls(model: str = DEVICE_MODEL_M8) -> dict:
     """Return API URLs for the given device model."""
-    if model == DEVICE_MODEL_M8E:
+    if model in (DEVICE_MODEL_M8E, DEVICE_MODEL_BATH_HEATER, DEVICE_MODEL_M8E_SENSOR):
         return {
             "login": API_LOGIN_M8E,
             "list": API_LIST_DEVICES_M8E,
+            "device_list": API_GET_DEVICE_LIST_M8E,
             "status": API_GET_STATUS_M8E,
             "control": API_SET_CONTROL_M8E,
             "power": API_SET_POWER_M8E,
+            "device_function": API_GET_DEVICE_FUNCTION_M8E,
+            "air_index": API_GET_DEVICE_AIR_INDEX_M8E,
+            "filter_alarm": API_GET_FILTER_ALARM_M8E,
+            "filter_reset": API_FILTER_ALARM_RESET_M8E,
+            "filter_edit": API_FILTER_ALARM_EDIT_M8E,
         }
     return {
         "login": API_LOGIN,
@@ -102,8 +116,49 @@ MODE_NAME_TO_VALUE = {v: k for k, v in MODE_NAMES.items()}
 MODE_NAME_TO_VALUE_M8E = {v: k for k, v in MODE_NAMES_M8E.items()}
 
 
+FUNC_BATH_COOL = 25       # 涼風
+FUNC_BATH_VENT = 26       # 換氣
+FUNC_BATH_DRY_ECO = 21    # 乾燥-節電
+FUNC_BATH_DRY_FAST = 22   # 乾燥-快速
+FUNC_BATH_HEAT_BATH = 23  # 暖房-沐浴
+FUNC_BATH_HEAT_TEMP = 24  # 暖房-溫控
+
+FUNC_NAMES_BATH = {
+    FUNC_BATH_COOL: "涼風",
+    FUNC_BATH_VENT: "換氣",
+    FUNC_BATH_DRY_ECO: "乾燥-節電",
+    FUNC_BATH_DRY_FAST: "乾燥-快速",
+    FUNC_BATH_HEAT_BATH: "暖房-沐浴",
+    FUNC_BATH_HEAT_TEMP: "暖房-溫控",
+}
+FUNC_NAME_TO_VALUE_BATH = {v: k for k, v in FUNC_NAMES_BATH.items()}
+
+# Functions that support countdown timer
+FUNC_BATH_WITH_COUNTDOWN = {FUNC_BATH_DRY_FAST, FUNC_BATH_HEAT_BATH, FUNC_BATH_HEAT_TEMP}
+
+SPEED_NAMES_BATH = {1: "弱", 2: "中", 3: "強"}
+SPEED_NAME_TO_VALUE_BATH = {v: k for k, v in SPEED_NAMES_BATH.items()}
+
+
 def get_mode_config(model: str = DEVICE_MODEL_M8) -> tuple[dict, dict]:
     """Return (mode_names, name_to_value) for the given model."""
     if model == DEVICE_MODEL_M8E:
         return MODE_NAMES_M8E, MODE_NAME_TO_VALUE_M8E
     return MODE_NAMES, MODE_NAME_TO_VALUE
+
+
+def is_m8e_platform(model: str) -> bool:
+    """Return True if the model uses the M8-E (淨流系統) API platform."""
+    return model in (DEVICE_MODEL_M8E, DEVICE_MODEL_BATH_HEATER, DEVICE_MODEL_M8E_SENSOR)
+
+
+def detect_device_model(machine_no: str) -> str:
+    """Detect device model from MachineNo string."""
+    if not machine_no:
+        return DEVICE_MODEL_M8E
+    mn = machine_no.upper()
+    if mn.startswith("BD-"):
+        return DEVICE_MODEL_BATH_HEATER
+    if mn == "M8-E":
+        return DEVICE_MODEL_M8E_SENSOR
+    return DEVICE_MODEL_M8E

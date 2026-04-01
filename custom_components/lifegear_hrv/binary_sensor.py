@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, CONF_MAC
+from .const import DOMAIN, CONF_MAC, CONF_DEVICE_MODEL, DEVICE_MODEL_M8, DEVICE_MODEL_BATH_HEATER, DEVICE_MODEL_M8E_SENSOR
 from .coordinator import LifegearHRVCoordinator
 
 
@@ -27,7 +27,6 @@ async def async_setup_entry(
 class LifegearHRVConnectivity(CoordinatorEntity, BinarySensorEntity):
     """M8 device connectivity sensor."""
 
-    _attr_name = "M8 連線狀態"
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_icon = "mdi:wifi-check"
     _attr_has_entity_name = True
@@ -40,6 +39,12 @@ class LifegearHRVConnectivity(CoordinatorEntity, BinarySensorEntity):
         """Initialize."""
         super().__init__(coordinator)
         mac = entry.data.get(CONF_MAC, "unknown")
+        model = entry.data.get(CONF_DEVICE_MODEL, DEVICE_MODEL_M8)
+        name_map = {
+            DEVICE_MODEL_BATH_HEATER: "暖風機連線狀態",
+            DEVICE_MODEL_M8E_SENSOR: "M8-E 連線狀態",
+        }
+        self._attr_name = name_map.get(model, "M8 連線狀態")
         self._attr_unique_id = f"lifegear_hrv_{mac}_connectivity"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, mac)},

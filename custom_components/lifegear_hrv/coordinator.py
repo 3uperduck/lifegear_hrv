@@ -27,9 +27,12 @@ from .const import (
     LOGIN_METHOD_CREDENTIALS,
     LOGIN_METHOD_LOCAL,
     DEVICE_MODEL_M8,
+    DEVICE_MODEL_BATH_HEATER,
+    DEVICE_MODEL_M8E_SENSOR,
     HEADERS,
     normalize_mode,
     get_api_urls,
+    is_m8e_platform,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -65,7 +68,9 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
         self._last_relogin_time: float = 0
 
         # Local mode polls more frequently (device pushes ~every 3 s)
-        interval = timedelta(seconds=5) if self._local_mode else timedelta(seconds=30)
+        # Cloud mode: 60s to reduce server load (3 devices stagger naturally)
+        interval = timedelta(seconds=5) if self._local_mode else timedelta(seconds=60)
+        self._poll_count = 0
         super().__init__(
             hass,
             _LOGGER,
@@ -219,10 +224,192 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
         # Both M8 and M8-E getHomeDeviceDetail return device directly
         return entry if entry.get("mdid") or entry.get("success") is True else None
 
+    async def async_filter_reset(self, filter_type: int) -> bool:
+        """Reset filter usage counter. FilterType: 1=Primary, 2=High."""
+        if "filter_reset" not in self._api_urls:
+            return False
+        payload = (
+            f"Mac={self.mac}&u_id={self.user_id}"
+            f"&AuthCode={self.auth_code}&FilterType={filter_type}"
+        )
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self._api_urls["filter_reset"], data=payload, headers=HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    text = await response.text()
+                    _LOGGER.debug("Filter reset response: %s", text)
+            await asyncio.sleep(1.0)
+            await self.async_request_refresh()
+            return True
+        except Exception as err:
+            _LOGGER.error("Filter reset failed: %s", err)
+            return False
+
+    async def async_filter_set_alarm_time(self, filter_type: int, alarm_time: int) -> bool:
+        """Set filter alarm time. FilterType: 1=Primary, 2=High."""
+        if "filter_edit" not in self._api_urls:
+            return False
+        payload = (
+            f"Mac={self.mac}&u_id={self.user_id}"
+            f"&AuthCode={self.auth_code}&FilterType={filter_type}"
+            f"&AlarmTime={alarm_time}"
+        )
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self._api_urls["filter_edit"], data=payload, headers=HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    text = await response.text()
+                    _LOGGER.debug("Filter alarm edit response: %s", text)
+            await asyncio.sleep(1.0)
+            await self.async_request_refresh()
+            return True
+        except Exception as err:
+            _LOGGER.error("Filter alarm edit failed: %s", err)
+            return False
+
+    async def _async_fetch_filter_alarm(self, session: aiohttp.ClientSession, result: dict) -> None:
+        """Fetch filter alarm data and merge into result dict. Only every 10th poll (~10 min)."""
+        if "filter_alarm" not in self._api_urls:
+            return
+        self._poll_count += 1
+        if self._poll_count % 30 != 1:
+            # Carry over previous filter data
+            if self.data:
+                for key in ("filter_high_used", "filter_high_alarm", "filter_high_reset",
+                            "filter_primary_used", "filter_primary_alarm", "filter_primary_reset"):
+                    if key in self.data:
+                        result[key] = self.data[key]
+            return
+        auth_payload = f"u_id={self.user_id}&Mac={self.mac}&AuthCode={self.auth_code}"
+        try:
+            async with session.post(
+                self._api_urls["filter_alarm"],
+                data=auth_payload,
+                headers=HEADERS,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                text = await response.text()
+                data = json.loads(text)
+                if data and data[0].get("success"):
+                    filt = data[0].get("result", [{}])[0]
+                    result["filter_high_used"] = filt.get("HighUsedTime")
+                    result["filter_high_alarm"] = filt.get("HighAlarmTime")
+                    result["filter_high_reset"] = filt.get("HighResetTime")
+                    result["filter_primary_used"] = filt.get("PrimaryUsedTime")
+                    result["filter_primary_alarm"] = filt.get("PrimaryAlarmTime")
+                    result["filter_primary_reset"] = filt.get("PrimaryResetTime")
+        except Exception as err:
+            _LOGGER.debug("Filter alarm fetch failed: %s", err)
+
+    async def _async_update_bath_heater(self) -> dict[str, Any]:
+        """Fetch bath heater state from getDeviceFunction + getDeviceAirIndex."""
+        auth_payload = f"u_id={self.user_id}&Mac={self.mac}&AuthCode={self.auth_code}"
+        result: dict[str, Any] = {"_device_model": DEVICE_MODEL_BATH_HEATER}
+
+        async with aiohttp.ClientSession() as session:
+            # 1) getDeviceFunction → power, function, speed, countdown
+            async with session.post(
+                self._api_urls["device_function"],
+                data=auth_payload,
+                headers=HEADERS,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                text = await response.text()
+                data = json.loads(text)
+                if data and data[0].get("success"):
+                    dev = data[0].get("result", [{}])[0]
+                    result["md_ispower"] = int(dev.get("IsPower", 0))
+                    # API returned data successfully = device reachable
+                    result["md_isconnect"] = 1
+                    # Parse Function list for selected values
+                    for func_group in dev.get("Function", []):
+                        param = func_group.get("Parameters", "")
+                        for sub in func_group.get("ParametersSub", []):
+                            if param == "Function" and str(sub.get("Selected")) == "1":
+                                result["md_function"] = int(sub["Data"])
+                            elif param == "Speed" and str(sub.get("Selected")) == "1":
+                                result["md_speed"] = str(sub["Data"])
+                            elif param == "CountDown":
+                                if sub.get("FunctionTitle") == "SetCountDown":
+                                    result["md_set_countdown"] = sub.get("Data", "")
+                                elif sub.get("FunctionTitle") == "CountDown":
+                                    result["md_countdown"] = sub.get("Data", "")
+
+            # 2) getDeviceAirIndex → sensor data
+            async with session.post(
+                self._api_urls["air_index"],
+                data=auth_payload,
+                headers=HEADERS,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                text = await response.text()
+                data = json.loads(text)
+                if data and data[0].get("success"):
+                    air = data[0].get("result", [{}])[0]
+                    result["md_co2"] = air.get("co2", "")
+                    result["md_pm25"] = air.get("pm25", "")
+                    result["md_temp"] = air.get("temp", "")
+                    result["md_rh"] = air.get("rh", "")
+
+            # 3) getDeviceFilterAlarm → filter data
+            await self._async_fetch_filter_alarm(session, result)
+
+        return result
+
+    async def _async_update_m8e_sensor(self) -> dict[str, Any]:
+        """Fetch M8-E sensor data from getDeviceAirIndex."""
+        auth_payload = f"u_id={self.user_id}&Mac={self.mac}&AuthCode={self.auth_code}"
+        result: dict[str, Any] = {"_device_model": DEVICE_MODEL_M8E_SENSOR}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                self._api_urls["air_index"],
+                data=auth_payload,
+                headers=HEADERS,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                text = await response.text()
+                data = json.loads(text)
+                if data and data[0].get("success"):
+                    air = data[0].get("result", [{}])[0]
+                    result["md_co2"] = air.get("co2", "")
+                    result["md_pm25"] = air.get("pm25", "")
+                    result["md_temp"] = air.get("temp", "")
+                    result["md_rh"] = air.get("rh", "")
+                    result["md_isconnect"] = 1
+                else:
+                    raise UpdateFailed("No sensor data received")
+
+        return result
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API."""
         if self._local_mode:
             return await self._async_update_local()
+
+        if self._model == DEVICE_MODEL_BATH_HEATER:
+            try:
+                return await self._async_update_bath_heater()
+            except Exception as err:
+                if not self._relogin_attempted and self._has_cloud_creds:
+                    self._relogin_attempted = True
+                    if await self._async_relogin():
+                        return await self._async_update_bath_heater()
+                raise UpdateFailed(f"Bath heater update error: {err}")
+
+        if self._model == DEVICE_MODEL_M8E_SENSOR:
+            try:
+                return await self._async_update_m8e_sensor()
+            except Exception as err:
+                if not self._relogin_attempted and self._has_cloud_creds:
+                    self._relogin_attempted = True
+                    if await self._async_relogin():
+                        return await self._async_update_m8e_sensor()
+                raise UpdateFailed(f"M8-E sensor update error: {err}")
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -238,7 +425,9 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
                     device = self._extract_device(data)
                     if device and device.get("mdid"):
                         self._relogin_attempted = False
-                        return self._normalize_device_data(device)
+                        result = self._normalize_device_data(device)
+                        await self._async_fetch_filter_alarm(session, result)
+                        return result
                     # Auth failure or no device - try relogin
                     if not self._relogin_attempted and self._has_cloud_creds:
                         self._relogin_attempted = True
@@ -255,7 +444,9 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
                                 device2 = self._extract_device(data2)
                                 if device2 and device2.get("mdid"):
                                     self._relogin_attempted = False
-                                    return self._normalize_device_data(device2)
+                                    result2 = self._normalize_device_data(device2)
+                                    await self._async_fetch_filter_alarm(session, result2)
+                                    return result2
                     raise UpdateFailed("No data received")
         except UpdateFailed:
             raise
@@ -336,6 +527,79 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Cloud control failed: %s", err)
             return False
 
+    async def _async_bath_heater_set_control(
+        self,
+        ispower: int | None = None,
+        function: int | None = None,
+        speed: int | None = None,
+        countdown: int | None = None,
+    ) -> bool:
+        """Control bath heater via getDevicePower + getDeviceFunctionEdit.
+
+        App flow: power on → function edit (always, with SetCountDown).
+        Power off: just send power off.
+        """
+        if not self._auth_valid or not self.auth_code:
+            return False
+
+        current_data = self.data or {}
+        target_function = function if function is not None else current_data.get("md_function", 25)
+        target_speed = speed if speed is not None else int(current_data.get("md_speed", 3) or 3)
+        target_countdown = countdown if countdown is not None else int(current_data.get("md_set_countdown", 60) or 60)
+        countdown_str = str(target_countdown)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Power off: just send power off, done
+                if ispower == 0:
+                    power_payload = (
+                        f"Mac={self.mac}&u_id={self.user_id}"
+                        f"&AuthCode={self.auth_code}"
+                        f"&IsPower=0&ShareMidno="
+                    )
+                    async with session.post(
+                        self._api_urls["power"], data=power_payload, headers=HEADERS,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as response:
+                        text = await response.text()
+                        _LOGGER.debug("Bath heater power off: %s", text)
+                    return True
+
+                # Power on or function/speed change:
+                # 1) Send power on
+                power_payload = (
+                    f"Mac={self.mac}&u_id={self.user_id}"
+                    f"&AuthCode={self.auth_code}"
+                    f"&IsPower=1&ShareMidno="
+                )
+                async with session.post(
+                    self._api_urls["power"], data=power_payload, headers=HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    text = await response.text()
+                    _LOGGER.debug("Bath heater power on: %s", text)
+
+                await asyncio.sleep(0.3)
+
+                # 2) Send function edit
+                control_payload = (
+                    f"Mode=&AuthCode={self.auth_code}"
+                    f"&Speed={target_speed}&SetCountDown={countdown_str}"
+                    f"&u_id={self.user_id}&ShareMidno="
+                    f"&Function={target_function}&Mac={self.mac}&Auto=&Mute="
+                )
+                async with session.post(
+                    self._api_urls["control"], data=control_payload, headers=HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    text = await response.text()
+                    _LOGGER.debug("Bath heater function edit: %s", text)
+
+                return True
+        except Exception as err:
+            _LOGGER.warning("Bath heater control failed: %s", err)
+            return False
+
     async def _async_set_control_local(
         self,
         ispower: int | None,
@@ -392,6 +656,28 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
             await asyncio.sleep(0.5)
             await self.async_request_refresh()
             return True
+        return False
+
+    async def async_set_bath_heater_control(
+        self,
+        ispower: int | None = None,
+        function: int | None = None,
+        speed: int | None = None,
+        countdown: int | None = None,
+    ) -> bool:
+        """Send control command to bath heater with retry."""
+        for attempt in range(3):
+            ok = await self._async_bath_heater_set_control(
+                ispower=ispower, function=function, speed=speed, countdown=countdown,
+            )
+            if ok:
+                await asyncio.sleep(1.0)
+                await self.async_request_refresh()
+                return True
+            if not self._relogin_attempted and self._has_cloud_creds:
+                self._relogin_attempted = True
+                await self._async_relogin()
+            await asyncio.sleep(0.5)
         return False
 
     async def async_set_control(

@@ -28,8 +28,12 @@ from .const import (
     LOGIN_METHOD_LOCAL,
     DEVICE_MODEL_M8,
     DEVICE_MODEL_M8E,
+    DEVICE_MODEL_BATH_HEATER,
+    DEVICE_MODEL_M8E_SENSOR,
     HEADERS,
     get_api_urls,
+    is_m8e_platform,
+    detect_device_model,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,6 +46,24 @@ async def validate_manual_input(
     urls = get_api_urls(model)
     try:
         async with aiohttp.ClientSession() as session:
+            # M8-E platform: use getDeviceList to get all devices
+            if is_m8e_platform(model):
+                from .crypto import async_get_device_list
+                devices = await async_get_device_list(
+                    session, data[CONF_USER_ID], data[CONF_AUTH_CODE], model
+                )
+                if not devices:
+                    raise InvalidAuth
+                device = devices[0]
+                info = {
+                    "title": device.get("MachineTitle", "樂奇 M8-E"),
+                    CONF_DEVICE_ID: str(device["mdid"]),
+                    CONF_MAC: device["Mac"],
+                    "devices": devices,
+                }
+                return info
+
+            # M8: use getHomeDeviceDetail
             payload = f"u_id={data[CONF_USER_ID]}&AuthCode={data[CONF_AUTH_CODE]}&ShareMidno="
             async with session.post(
                 urls["list"],
@@ -54,23 +76,18 @@ async def validate_manual_input(
                 result = json.loads(text)
 
                 if result and len(result) > 0:
-                    entry = result[0]
-                    # M8-E wraps devices in result[], M8 returns device directly
-                    if model == DEVICE_MODEL_M8E:
-                        devices = entry.get("result", [])
-                        device = devices[0] if devices else {}
-                    else:
-                        device = entry
+                    device = result[0]
                     mdid = device.get("mdid")
                     if mdid:
-                        default_name = "樂奇 M8-E" if model == DEVICE_MODEL_M8E else "樂奇全熱交換機"
-                        mac = device.get("mac") or device.get("md_mac")
+                        mac = device.get("md_mac")
                         return {
-                            "title": device.get("pdname") or device.get("md_wisdom") or default_name,
+                            "title": device.get("md_wisdom") or "樂奇全熱交換機",
                             CONF_DEVICE_ID: str(mdid),
                             CONF_MAC: mac,
                         }
                 raise InvalidAuth
+    except (InvalidAuth, CannotConnect):
+        raise
     except aiohttp.ClientError as err:
         _LOGGER.error("Connection error: %s", err)
         raise CannotConnect from err
@@ -93,14 +110,17 @@ async def validate_credentials(
                 data[CONF_PASSWORD],
                 model=model,
             )
-            default_name = "樂奇 M8-E" if model == DEVICE_MODEL_M8E else "樂奇全熱交換機"
-            return {
+            default_name = "樂奇 M8-E" if is_m8e_platform(model) else "樂奇全熱交換機"
+            info = {
                 "title": result.get("title", default_name),
                 CONF_USER_ID: result["u_id"],
                 CONF_AUTH_CODE: result["auth_code"],
                 CONF_DEVICE_ID: result[CONF_DEVICE_ID],
                 CONF_MAC: result[CONF_MAC],
             }
+            if result.get("devices"):
+                info["devices"] = result["devices"]
+            return info
         except ValueError as err:
             _LOGGER.error("Auth error: %s", err)
             raise InvalidAuth from err
@@ -144,7 +164,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_DEVICE_MODEL, default=DEVICE_MODEL_M8): vol.In(
                         {
                             DEVICE_MODEL_M8: "智慧果 M8",
-                            DEVICE_MODEL_M8E: "智慧果 M8-E（淨流系統）",
+                            DEVICE_MODEL_M8E: "淨流系統（M8-E / 暖風機 / 感測器）",
                         }
                     ),
                     vol.Required(CONF_LOGIN_METHOD, default=LOGIN_METHOD_LOCAL): vol.In(
@@ -227,6 +247,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
+                if is_m8e_platform(self._model) and info.get("devices"):
+                    return self._create_all_devices(
+                        info["devices"],
+                        login_method=LOGIN_METHOD_CREDENTIALS,
+                        user_id=info[CONF_USER_ID],
+                        auth_code=info[CONF_AUTH_CODE],
+                        account=user_input[CONF_ACCOUNT],
+                        password=user_input[CONF_PASSWORD],
+                    )
+
                 entry_data = {
                     CONF_LOGIN_METHOD: LOGIN_METHOD_CREDENTIALS,
                     CONF_DEVICE_MODEL: self._model,
@@ -250,6 +280,70 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    def _create_all_devices(
+        self,
+        devices: list[dict],
+        login_method: str,
+        user_id: str,
+        auth_code: str,
+        account: str | None = None,
+        password: str | None = None,
+    ) -> FlowResult:
+        """Auto-create config entries for all new devices. Returns first entry."""
+        existing_macs = {
+            entry.data.get(CONF_MAC)
+            for entry in self.hass.config_entries.async_entries(DOMAIN)
+        }
+        available = [d for d in devices if d["Mac"] not in existing_macs]
+        if not available:
+            return self.async_abort(reason="already_configured")
+
+        def _build_entry_data(device: dict) -> dict:
+            data = {
+                CONF_LOGIN_METHOD: login_method,
+                CONF_DEVICE_MODEL: detect_device_model(device.get("MachineNo", "")),
+                CONF_USER_ID: user_id,
+                CONF_AUTH_CODE: auth_code,
+                CONF_DEVICE_ID: str(device["mdid"]),
+                CONF_MAC: device["Mac"],
+            }
+            if account and password:
+                data[CONF_ACCOUNT] = account
+                data[CONF_PASSWORD] = password
+            return data
+
+        # Background-create 2nd, 3rd, ... devices
+        for device in available[1:]:
+            self.hass.async_create_task(
+                self.hass.config_entries.flow.async_init(
+                    DOMAIN,
+                    context={"source": "auto_device"},
+                    data={
+                        "title": device.get("MachineTitle", "樂奇設備"),
+                        "entry_data": _build_entry_data(device),
+                    },
+                )
+            )
+
+        # Return first device as main entry
+        first = available[0]
+        return self.async_create_entry(
+            title=first.get("MachineTitle", "樂奇設備"),
+            data=_build_entry_data(first),
+        )
+
+    async def async_step_auto_device(
+        self, discovery_info: dict[str, Any]
+    ) -> FlowResult:
+        """Handle auto-creation of additional devices."""
+        mac = discovery_info["entry_data"][CONF_MAC]
+        await self.async_set_unique_id(mac)
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title=discovery_info["title"],
+            data=discovery_info["entry_data"],
+        )
+
     async def async_step_manual(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -267,6 +361,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
+                if is_m8e_platform(self._model) and info.get("devices"):
+                    return self._create_all_devices(
+                        info["devices"],
+                        login_method=LOGIN_METHOD_MANUAL,
+                        user_id=user_input[CONF_USER_ID],
+                        auth_code=user_input[CONF_AUTH_CODE],
+                    )
+
                 entry_data = {
                     CONF_LOGIN_METHOD: LOGIN_METHOD_MANUAL,
                     CONF_DEVICE_MODEL: self._model,
@@ -291,32 +393,29 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle reconfiguration."""
+        """Handle reconfiguration (update auth only, preserve device config)."""
         errors: dict[str, str] = {}
         entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
         is_credentials = entry.data.get(CONF_LOGIN_METHOD) == LOGIN_METHOD_CREDENTIALS
+        model = entry.data.get(CONF_DEVICE_MODEL, DEVICE_MODEL_M8)
 
         if user_input is not None:
             try:
                 if is_credentials:
-                    info = await validate_credentials(self.hass, user_input)
+                    info = await validate_credentials(self.hass, user_input, model=model)
                     new_data = {
-                        CONF_LOGIN_METHOD: LOGIN_METHOD_CREDENTIALS,
+                        **entry.data,
                         CONF_ACCOUNT: user_input[CONF_ACCOUNT],
                         CONF_PASSWORD: user_input[CONF_PASSWORD],
                         CONF_USER_ID: info[CONF_USER_ID],
                         CONF_AUTH_CODE: info[CONF_AUTH_CODE],
-                        CONF_DEVICE_ID: info[CONF_DEVICE_ID],
-                        CONF_MAC: info[CONF_MAC],
                     }
                 else:
-                    info = await validate_manual_input(self.hass, user_input)
+                    info = await validate_manual_input(self.hass, user_input, model=model)
                     new_data = {
-                        CONF_LOGIN_METHOD: LOGIN_METHOD_MANUAL,
+                        **entry.data,
                         CONF_USER_ID: user_input[CONF_USER_ID],
                         CONF_AUTH_CODE: user_input[CONF_AUTH_CODE],
-                        CONF_DEVICE_ID: info[CONF_DEVICE_ID],
-                        CONF_MAC: info[CONF_MAC],
                     }
             except CannotConnect:
                 errors["base"] = "cannot_connect"
@@ -364,6 +463,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         is_credentials = login_method == LOGIN_METHOD_CREDENTIALS
         is_local = login_method == LOGIN_METHOD_LOCAL
 
+        model = self.config_entry.data.get(CONF_DEVICE_MODEL, DEVICE_MODEL_M8)
+
         if user_input is not None:
             try:
                 if is_local:
@@ -378,28 +479,24 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         new_data.pop(CONF_ACCOUNT, None)
                         new_data.pop(CONF_PASSWORD, None)
                 elif is_credentials:
-                    info = await validate_credentials(self.hass, user_input)
+                    info = await validate_credentials(self.hass, user_input, model=model)
                     new_data = {
-                        CONF_LOGIN_METHOD: LOGIN_METHOD_CREDENTIALS,
+                        **self.config_entry.data,
                         CONF_ACCOUNT: user_input[CONF_ACCOUNT],
                         CONF_PASSWORD: user_input[CONF_PASSWORD],
                         CONF_USER_ID: info[CONF_USER_ID],
                         CONF_AUTH_CODE: info[CONF_AUTH_CODE],
-                        CONF_DEVICE_ID: info[CONF_DEVICE_ID],
-                        CONF_MAC: info[CONF_MAC],
                     }
                 else:
                     data = {
                         CONF_USER_ID: user_input[CONF_USER_ID],
                         CONF_AUTH_CODE: user_input[CONF_AUTH_CODE],
                     }
-                    info = await validate_manual_input(self.hass, data)
+                    info = await validate_manual_input(self.hass, data, model=model)
                     new_data = {
-                        CONF_LOGIN_METHOD: LOGIN_METHOD_MANUAL,
+                        **self.config_entry.data,
                         CONF_USER_ID: user_input[CONF_USER_ID],
                         CONF_AUTH_CODE: user_input[CONF_AUTH_CODE],
-                        CONF_DEVICE_ID: info[CONF_DEVICE_ID],
-                        CONF_MAC: info[CONF_MAC],
                     }
             except CannotConnect:
                 errors["base"] = "cannot_connect"

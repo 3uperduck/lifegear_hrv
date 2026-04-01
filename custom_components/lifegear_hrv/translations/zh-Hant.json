@@ -36,6 +36,13 @@
           "password": "樂奇 App 密碼（選填）"
         }
       },
+      "select_device": {
+        "title": "選擇設備",
+        "description": "帳號下有 {count} 台尚未設定的設備，請選擇要新增的設備。\n新增後可再次執行設定流程來新增其他設備。",
+        "data": {
+          "device": "設備"
+        }
+      },
       "reconfigure": {
         "title": "重新設定樂奇全熱交換機",
         "description": "請輸入新的帳號資訊",
@@ -83,13 +90,17 @@
       "temperature": { "name": "溫度" },
       "humidity": { "name": "濕度" },
       "speed_sensor": { "name": "目前風速" },
-      "mode_sensor": { "name": "目前模式" }
+      "mode_sensor": { "name": "目前模式" },
+      "function_sensor": { "name": "目前功能" },
+      "bath_speed_sensor": { "name": "目前風速" }
     },
     "switch": {
       "power": { "name": "電源" }
     },
     "select": {
-      "mode": { "name": "模式" }
+      "mode": { "name": "模式" },
+      "function": { "name": "功能" },
+      "bath_speed": { "name": "風速" }
     },
     "number": {
       "speed": { "name": "風速" }

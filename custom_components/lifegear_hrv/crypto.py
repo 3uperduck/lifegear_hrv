@@ -18,6 +18,8 @@ from .const import (
     CONF_MAC,
     DEVICE_MODEL_M8,
     get_api_urls,
+    is_m8e_platform,
+    detect_device_model,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -104,42 +106,88 @@ async def async_login(
         raise ConnectionError(f"Invalid response: {err}") from err
 
     # Step 2: Get device list
-    from .const import DEVICE_MODEL_M8E
-    list_payload = f"u_id={account}&AuthCode={auth_code}&ShareMidno="
+    _LOGGER.warning("async_login step2: model=%s, is_m8e=%s", model, is_m8e_platform(model))
+    if is_m8e_platform(model):
+        # M8-E platform: use getDeviceList to get all devices, return first one
+        devices = await async_get_device_list(session, account, auth_code, model)
+        _LOGGER.warning("getDeviceList returned %d devices: %s", len(devices), [d.get("MachineTitle") for d in devices])
+        if not devices:
+            raise ValueError("No device found")
+        device = devices[0]
+        return {
+            "u_id": account,
+            "auth_code": auth_code,
+            CONF_DEVICE_ID: str(device["mdid"]),
+            CONF_MAC: device["Mac"],
+            "title": device["MachineTitle"],
+            "devices": devices,
+        }
+    else:
+        # M8: use getHomeDeviceDetail
+        list_payload = f"u_id={account}&AuthCode={auth_code}&ShareMidno="
+        try:
+            async with session.post(
+                urls["list"],
+                data=list_payload,
+                headers=HEADERS,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                text = await response.text()
+                _LOGGER.debug("Device list response: %s", text)
+                data = json.loads(text)
+
+                if not data or len(data) == 0:
+                    raise ValueError("No device data received")
+
+                device = data[0]
+                if not device.get("mdid"):
+                    raise ValueError("No device found")
+
+                mac = device.get("md_mac")
+                return {
+                    "u_id": account,
+                    "auth_code": auth_code,
+                    CONF_DEVICE_ID: str(device.get("mdid")),
+                    CONF_MAC: mac,
+                    "title": device.get("md_wisdom") or "樂奇全熱交換機",
+                }
+        except aiohttp.ClientError as err:
+            raise ConnectionError(f"Connection error: {err}") from err
+        except json.JSONDecodeError as err:
+            raise ConnectionError(f"Invalid response: {err}") from err
+
+
+async def async_get_device_list(
+    session: aiohttp.ClientSession,
+    account: str,
+    auth_code: str,
+    model: str = DEVICE_MODEL_M8,
+) -> list[dict]:
+    """Get all devices from getDeviceList.asp (M8-E platform).
+
+    Returns list of device dicts with keys: mdid, Mac, MachineTitle, MachineNo, MachineType, GroupIsMain, isOnLine, IsPower.
+    """
+    urls = get_api_urls(model)
+    payload = f"u_id={account}&ShareMidno=&AuthCode={auth_code}"
     try:
         async with session.post(
-            urls["list"],
-            data=list_payload,
+            urls["device_list"],
+            data=payload,
             headers=HEADERS,
             timeout=aiohttp.ClientTimeout(total=10),
         ) as response:
             text = await response.text()
-            _LOGGER.debug("Device list response: %s", text)
-            data = json.loads(text)  # noqa: F811
+            _LOGGER.debug("getDeviceList response: %s", text)
+            data = json.loads(text)
 
             if not data or len(data) == 0:
-                raise ValueError("No device data received")
+                raise ValueError("Empty device list response")
 
             entry = data[0]
-            if model == DEVICE_MODEL_M8E:
-                # M8-E: {"result":[{"mdid":"...","mac":"...","pdname":"..."}]}
-                devices = entry.get("result", [])
-                device = devices[0] if devices else {}
-            else:
-                # M8: [{"mdid":"4249","md_mac":"...","md_wisdom":"..."}]
-                device = entry
-            if not device.get("mdid"):
-                raise ValueError("No device found")
+            if not entry.get("success"):
+                raise ValueError(f"Device list failed: {entry.get('message')}")
 
-            default_name = "樂奇 M8-E" if model == DEVICE_MODEL_M8E else "樂奇全熱交換機"
-            mac = device.get("mac") or device.get("md_mac")
-            return {
-                "u_id": account,
-                "auth_code": auth_code,
-                CONF_DEVICE_ID: str(device.get("mdid")),
-                CONF_MAC: mac,
-                "title": device.get("pdname") or device.get("md_wisdom") or default_name,
-            }
+            return entry.get("result", [])
     except aiohttp.ClientError as err:
         raise ConnectionError(f"Connection error: {err}") from err
     except json.JSONDecodeError as err:

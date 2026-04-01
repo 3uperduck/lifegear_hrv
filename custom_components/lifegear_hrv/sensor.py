@@ -17,7 +17,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, CONF_MAC, CONF_DEVICE_MODEL, DEVICE_MODEL_M8, normalize_mode, get_mode_config
+from homeassistant.const import UnitOfTime
+
+from .const import (
+    DOMAIN, CONF_MAC, CONF_DEVICE_MODEL, DEVICE_MODEL_M8, DEVICE_MODEL_M8E,
+    DEVICE_MODEL_BATH_HEATER, DEVICE_MODEL_M8E_SENSOR,
+    normalize_mode, get_mode_config, is_m8e_platform,
+    FUNC_NAMES_BATH,
+)
 from .coordinator import LifegearHRVCoordinator
 
 
@@ -28,15 +35,35 @@ async def async_setup_entry(
 ) -> None:
     """Set up Lifegear HRV sensors."""
     coordinator: LifegearHRVCoordinator = hass.data[DOMAIN][entry.entry_id]
+    model = entry.data.get(CONF_DEVICE_MODEL, DEVICE_MODEL_M8)
 
-    sensors = [
+    # All device types have air quality sensors
+    sensors: list[SensorEntity] = [
         LifegearHRVCO2Sensor(coordinator, entry),
         LifegearHRVPM25Sensor(coordinator, entry),
-        LifegearHRVTemperatureSensor(coordinator, entry),
         LifegearHRVHumiditySensor(coordinator, entry),
-        LifegearHRVSpeedSensor(coordinator, entry),
-        LifegearHRVModeSensor(coordinator, entry),
     ]
+
+    # Temperature: all except bath heater (returns empty temp)
+    if model != DEVICE_MODEL_BATH_HEATER:
+        sensors.append(LifegearHRVTemperatureSensor(coordinator, entry))
+
+    # Speed/Mode sensors: HRV devices only (M8, M8-E)
+    if model in (DEVICE_MODEL_M8, DEVICE_MODEL_M8E):
+        sensors.append(LifegearHRVSpeedSensor(coordinator, entry))
+        sensors.append(LifegearHRVModeSensor(coordinator, entry))
+
+    # Bath heater: function sensor
+    if model == DEVICE_MODEL_BATH_HEATER:
+        sensors.append(LifegearBathFunctionSensor(coordinator, entry))
+        sensors.append(LifegearBathSpeedSensor(coordinator, entry))
+
+    # Filter alarm sensors
+    if model == DEVICE_MODEL_M8E:
+        sensors.append(LifegearFilterSensor(coordinator, entry, "high", "高效濾網"))
+        sensors.append(LifegearFilterSensor(coordinator, entry, "primary", "初效濾網"))
+    elif model == DEVICE_MODEL_BATH_HEATER:
+        sensors.append(LifegearFilterSensor(coordinator, entry, "primary", "初效濾網"))
 
     async_add_entities(sensors)
 
@@ -58,11 +85,19 @@ class LifegearHRVBaseSensor(CoordinatorEntity, SensorEntity):
     @property
     def device_info(self):
         """Return device info."""
+        model = self._entry.data.get(CONF_DEVICE_MODEL, DEVICE_MODEL_M8)
+        names = {
+            DEVICE_MODEL_M8: ("樂奇全熱交換機", "智慧果 M8"),
+            DEVICE_MODEL_M8E: ("樂奇全熱交換機", "智慧果 M8-E"),
+            DEVICE_MODEL_BATH_HEATER: ("樂奇浴室暖風機", "BD-125W"),
+            DEVICE_MODEL_M8E_SENSOR: ("樂奇智慧果 M8-E", "M8-E 感測器"),
+        }
+        name, model_name = names.get(model, ("樂奇設備", model))
         return {
             "identifiers": {(DOMAIN, self._mac)},
-            "name": "樂奇全熱交換機",
+            "name": name,
             "manufacturer": "Lifegear 樂奇",
-            "model": "智慧果 M8",
+            "model": model_name,
         }
 
 
@@ -196,3 +231,98 @@ class LifegearHRVModeSensor(LifegearHRVBaseSensor):
                 return None
             return self._mode_names.get(normalize_mode(val), "未知")
         return None
+
+
+class LifegearBathFunctionSensor(LifegearHRVBaseSensor):
+    """Bath heater current function sensor."""
+
+    _attr_name = "目前功能"
+    _attr_icon = "mdi:heat-wave"
+
+    def __init__(self, coordinator: LifegearHRVCoordinator, entry: ConfigEntry) -> None:
+        """Initialize."""
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{self._mac}_function_sensor"
+
+    @property
+    def native_value(self):
+        """Return the state."""
+        if self.coordinator.data:
+            val = self.coordinator.data.get("md_function")
+            if val is None:
+                return None
+            return FUNC_NAMES_BATH.get(int(val), "未知")
+        return None
+
+
+class LifegearBathSpeedSensor(LifegearHRVBaseSensor):
+    """Bath heater current speed sensor."""
+
+    _attr_name = "目前風速"
+    _attr_icon = "mdi:fan"
+
+    def __init__(self, coordinator: LifegearHRVCoordinator, entry: ConfigEntry) -> None:
+        """Initialize."""
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{self._mac}_speed_sensor"
+
+    @property
+    def native_value(self):
+        """Return the state."""
+        if self.coordinator.data:
+            from .const import SPEED_NAMES_BATH
+            val = self.coordinator.data.get("md_speed")
+            if val is None or val == "":
+                return None
+            return SPEED_NAMES_BATH.get(int(val), str(val))
+        return None
+
+
+class LifegearFilterSensor(LifegearHRVBaseSensor):
+    """Filter usage sensor (高效濾網 / 初效濾網)."""
+
+    _attr_icon = "mdi:air-filter"
+    _attr_native_unit_of_measurement = UnitOfTime.HOURS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: LifegearHRVCoordinator,
+        entry: ConfigEntry,
+        filter_type: str,
+        filter_name: str,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator, entry)
+        self._filter_type = filter_type  # "high" or "primary"
+        self._attr_name = f"{filter_name}已使用"
+        self._attr_unique_id = f"{self._mac}_filter_{filter_type}_used"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return hours used."""
+        if self.coordinator.data:
+            val = self.coordinator.data.get(f"filter_{self._filter_type}_used")
+            if val is not None:
+                return int(val)
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return alarm threshold and reset time."""
+        if not self.coordinator.data:
+            return {}
+        prefix = f"filter_{self._filter_type}"
+        attrs = {}
+        alarm = self.coordinator.data.get(f"{prefix}_alarm")
+        if alarm is not None:
+            attrs["更換提醒時數"] = int(alarm)
+            used = self.coordinator.data.get(f"{prefix}_used")
+            if used is not None:
+                remaining = int(alarm) - int(used)
+                attrs["剩餘時數"] = max(0, remaining)
+                attrs["已到期"] = remaining <= 0
+        reset = self.coordinator.data.get(f"{prefix}_reset")
+        if reset:
+            attrs["上次重置"] = reset
+        return attrs
