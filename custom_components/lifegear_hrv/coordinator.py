@@ -186,8 +186,19 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
 
     @staticmethod
     def _is_m8_online(sensor_ts: str | None, state_ts: str | None) -> bool:
-        """Return True if M8 has sent data (either sensor or state timestamp exists)."""
-        return bool(sensor_ts) or bool(state_ts)
+        """Return True if M8 has pushed data within the last 60 seconds."""
+        from datetime import datetime
+
+        now = datetime.now()
+        for ts in (sensor_ts, state_ts):
+            if ts:
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    if (now - dt).total_seconds() < 60:
+                        return True
+                except (ValueError, TypeError):
+                    pass
+        return False
 
     def _build_status_payload(self) -> str:
         """Build payload for status API (M8 vs M8-E format)."""

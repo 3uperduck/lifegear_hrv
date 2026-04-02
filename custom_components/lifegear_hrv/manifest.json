@@ -8,5 +8,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/3uperduck/lifegear_hrv/issues",
   "requirements": ["aiohttp>=3.8.0", "cryptography>=41.0.0"],
-  "version": "4.2.0"
+  "version": "4.2.1"
 }
