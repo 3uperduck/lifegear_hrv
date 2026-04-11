@@ -187,14 +187,16 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
     @staticmethod
     def _is_m8_online(sensor_ts: str | None, state_ts: str | None) -> bool:
         """Return True if M8 has pushed data within the last 60 seconds."""
-        from datetime import datetime
+        from datetime import datetime, timezone
 
-        now = datetime.now()
+        now_utc = datetime.now(timezone.utc)
         for ts in (sensor_ts, state_ts):
             if ts:
                 try:
                     dt = datetime.fromisoformat(ts)
-                    if (now - dt).total_seconds() < 60:
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if (now_utc - dt).total_seconds() < 60:
                         return True
                 except (ValueError, TypeError):
                     pass
