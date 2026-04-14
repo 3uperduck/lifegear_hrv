@@ -284,6 +284,119 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
             _LOGGER.error("Filter alarm edit failed: %s", err)
             return False
 
+    def _get_addon_base_url_candidates(self) -> list[str]:
+        """Return ordered list of candidate URLs for the m8_local_server addon.
+
+        The addon runs with `host_network: true`, so its REST API is reachable
+        via several names depending on the HA install type. We try each in
+        order and cache the first that responds. Users without the addon
+        simply return from every candidate with a failure — harmless.
+        """
+        candidates: list[str] = []
+        from urllib.parse import urlparse
+        # 1. User-configured internal/external URL hostname (explicit setup)
+        for url_attr in ("internal_url", "external_url"):
+            url = getattr(self.hass.config, url_attr, None)
+            if url:
+                host = urlparse(url).hostname
+                if host:
+                    candidates.append(f"http://{host}:8765")
+        # 2. Supervisor-native addon hostnames (HAOS / Supervised)
+        candidates.extend([
+            "http://local-m8-local-server:8765",
+            "http://local-m8-local-server.local.hass.io:8765",
+            "http://homeassistant.local.hass.io:8765",
+            "http://homeassistant.local:8765",
+            "http://host.docker.internal:8765",
+            "http://172.30.32.1:8765",
+        ])
+        # Dedupe while preserving order
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for url in candidates:
+            if url not in seen:
+                seen.add(url)
+                deduped.append(url)
+        return deduped
+
+    async def _async_resolve_addon_base_url(
+        self, session: aiohttp.ClientSession
+    ) -> str | None:
+        """Probe the candidate list and cache the first URL that responds."""
+        cached = getattr(self, "_addon_base_url_cache", None)
+        if cached:
+            return cached
+        for url in self._get_addon_base_url_candidates():
+            probe_url = f"{url}/api/sensor/by_mac"
+            try:
+                async with session.get(
+                    probe_url, timeout=aiohttp.ClientTimeout(total=2)
+                ) as response:
+                    if response.status == 200:
+                        self._addon_base_url_cache = url
+                        _LOGGER.info("m8_local_server addon reachable at %s", url)
+                        return url
+            except Exception:
+                continue
+        self._addon_base_url_cache = None
+        return None
+
+    async def _async_fetch_addon_duct_temps(
+        self, session: aiohttp.ClientSession, result: dict
+    ) -> None:
+        """Fetch HRV duct temperatures (TempOA/SA/RA) from local m8_local_server addon.
+
+        The M8-E HRV ESP only pushes duct temperatures via PostAirIndex. These
+        are captured by the addon MitM and exposed at /api/sensor/by_mac.
+        Only available when:
+          1. The addon is running and reachable
+          2. The UDM DNAT rule is routing HRV traffic through the addon
+        Falls through silently otherwise — duct-temp entities become unavailable.
+        Computes heat-recovery efficiency from the three temps.
+        """
+        if not self.mac:
+            return
+        base = await self._async_resolve_addon_base_url(session)
+        if not base:
+            return
+        url = f"{base}/api/sensor/by_mac"
+        try:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=3)
+            ) as response:
+                if response.status != 200:
+                    return
+                data = await response.json()
+        except Exception as err:
+            _LOGGER.debug("Addon duct-temp fetch failed: %s", err)
+            return
+
+        slot = data.get(self.mac.upper()) or data.get(self.mac) or {}
+
+        def _to_float(v):
+            try:
+                return float(v) if v not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        oa = _to_float(slot.get("temp_oa"))
+        sa = _to_float(slot.get("temp_sa"))
+        ra = _to_float(slot.get("temp_ra"))
+        result["md_temp_oa"] = oa
+        result["md_temp_sa"] = sa
+        result["md_temp_ra"] = ra
+
+        # Heat recovery efficiency: (SA - OA) / (RA - OA) × 100
+        # Only meaningful when there's a meaningful temperature gradient.
+        if oa is not None and sa is not None and ra is not None:
+            gradient = ra - oa
+            if abs(gradient) >= 0.5:
+                result["md_hrv_efficiency"] = round((sa - oa) / gradient * 100, 1)
+            else:
+                result["md_hrv_efficiency"] = None
+        else:
+            result["md_hrv_efficiency"] = None
+
     async def _async_fetch_filter_alarm(self, session: aiohttp.ClientSession, result: dict) -> None:
         """Fetch filter alarm data and merge into result dict. Only every 10th poll (~10 min)."""
         if "filter_alarm" not in self._api_urls:
@@ -440,6 +553,7 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
                         self._relogin_attempted = False
                         result = self._normalize_device_data(device)
                         await self._async_fetch_filter_alarm(session, result)
+                        await self._async_fetch_addon_duct_temps(session, result)
                         return result
                     # Auth failure or no device - try relogin
                     if not self._relogin_attempted and self._has_cloud_creds:
@@ -459,6 +573,7 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
                                     self._relogin_attempted = False
                                     result2 = self._normalize_device_data(device2)
                                     await self._async_fetch_filter_alarm(session, result2)
+                                    await self._async_fetch_addon_duct_temps(session, result2)
                                     return result2
                     raise UpdateFailed("No data received")
         except UpdateFailed:

@@ -1,6 +1,9 @@
 """Sensor platform for Lifegear HRV."""
 from __future__ import annotations
 
+import logging
+
+import aiohttp
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -18,6 +21,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from homeassistant.const import UnitOfTime
+
+_LOGGER = logging.getLogger(__name__)
 
 from .const import (
     DOMAIN, CONF_MAC, CONF_DEVICE_MODEL, DEVICE_MODEL_M8, DEVICE_MODEL_M8E,
@@ -65,7 +70,60 @@ async def async_setup_entry(
     elif model == DEVICE_MODEL_BATH_HEATER:
         sensors.append(LifegearFilterSensor(coordinator, entry, "primary", "初效濾網"))
 
+    # Duct temperatures + heat recovery efficiency — only if the local
+    # m8_local_server addon is reachable. Without the addon running MitM,
+    # the cloud API doesn't expose per-duct temperatures, so the sensors
+    # would be permanently unavailable for most users. Probe once at setup.
+    if model == DEVICE_MODEL_M8E and await _async_addon_duct_temps_available(
+        hass, coordinator
+    ):
+        sensors.append(LifegearHRVDuctTempSensor(coordinator, entry, "oa", "外氣溫度"))
+        sensors.append(LifegearHRVDuctTempSensor(coordinator, entry, "sa", "送風溫度"))
+        sensors.append(LifegearHRVDuctTempSensor(coordinator, entry, "ra", "回風溫度"))
+        sensors.append(LifegearHRVEfficiencySensor(coordinator, entry))
+
     async_add_entities(sensors)
+
+
+async def _async_addon_duct_temps_available(
+    hass: HomeAssistant, coordinator: LifegearHRVCoordinator
+) -> bool:
+    """Return True only if the local m8_local_server addon is reachable AND
+    currently has duct-temperature data for this HRV's MAC.
+
+    Checking for *data* (not just a responding server) avoids registering the
+    entities on users who have the addon installed but haven't enabled the
+    DNAT rule — in that state the server returns null and the entities would
+    still be useless.
+    """
+    if not coordinator.mac:
+        return False
+    try:
+        async with aiohttp.ClientSession() as session:
+            base = await coordinator._async_resolve_addon_base_url(session)
+            if not base:
+                return False
+            async with session.get(
+                f"{base}/api/sensor/by_mac",
+                timeout=aiohttp.ClientTimeout(total=3),
+            ) as response:
+                if response.status != 200:
+                    return False
+                data = await response.json()
+    except Exception as err:
+        _LOGGER.debug("Addon duct-temp probe failed: %s", err)
+        return False
+    slot = data.get(coordinator.mac.upper()) or data.get(coordinator.mac) or {}
+    has_any = any(
+        slot.get(k) is not None for k in ("temp_oa", "temp_sa", "temp_ra")
+    )
+    if has_any:
+        _LOGGER.info(
+            "m8_local_server addon detected with duct temps for %s — "
+            "registering OA/SA/RA + efficiency sensors",
+            coordinator.mac,
+        )
+    return has_any
 
 
 class LifegearHRVBaseSensor(CoordinatorEntity, SensorEntity):
@@ -326,3 +384,76 @@ class LifegearFilterSensor(LifegearHRVBaseSensor):
         if reset:
             attrs["上次重置"] = reset
         return attrs
+
+
+class LifegearHRVDuctTempSensor(LifegearHRVBaseSensor):
+    """M8-E HRV duct temperature sensor (OA / SA / RA), sourced from addon MitM."""
+
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: LifegearHRVCoordinator,
+        entry: ConfigEntry,
+        duct: str,   # "oa" | "sa" | "ra"
+        name: str,
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator, entry)
+        self._duct = duct
+        self._attr_name = name
+        self._attr_unique_id = f"{self._mac}_temp_{duct}"
+
+    @property
+    def native_value(self):
+        """Return the duct temperature from the addon-sourced fields."""
+        if not self.coordinator.data:
+            return None
+        val = self.coordinator.data.get(f"md_temp_{self._duct}")
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def available(self) -> bool:
+        """Unavailable when addon/MitM isn't providing data."""
+        if not self.coordinator.last_update_success:
+            return False
+        if not self.coordinator.data:
+            return False
+        return self.coordinator.data.get(f"md_temp_{self._duct}") is not None
+
+
+class LifegearHRVEfficiencySensor(LifegearHRVBaseSensor):
+    """Heat recovery efficiency: (TempSA - TempOA) / (TempRA - TempOA) × 100."""
+
+    _attr_name = "熱回收效率"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:gauge"
+
+    def __init__(self, coordinator: LifegearHRVCoordinator, entry: ConfigEntry) -> None:
+        """Initialize."""
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{self._mac}_hrv_efficiency"
+
+    @property
+    def native_value(self):
+        """Return efficiency from coordinator-computed field."""
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("md_hrv_efficiency")
+
+    @property
+    def available(self) -> bool:
+        """Unavailable when gradient is too small or addon isn't providing data."""
+        if not self.coordinator.last_update_success:
+            return False
+        if not self.coordinator.data:
+            return False
+        return self.coordinator.data.get("md_hrv_efficiency") is not None
