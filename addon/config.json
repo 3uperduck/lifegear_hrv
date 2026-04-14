@@ -1,8 +1,8 @@
 {
   "name": "M8 Local Server",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "slug": "m8_local_server",
-  "description": "Lifegear M8 HRV local control server (MitM proxy)",
+  "description": "Lifegear M8 / M8-E HRV MitM proxy (daguan-tech + e-giant), per-MAC sensor split",
   "arch": ["aarch64", "amd64", "armhf", "armv7", "i386"],
   "ports": {
     "80/tcp": null,
