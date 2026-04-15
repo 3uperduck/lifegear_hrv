@@ -5,6 +5,7 @@ import time
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -268,6 +269,7 @@ class LifegearFilterAlarmSelect(CoordinatorEntity, SelectEntity):
 
     _attr_icon = "mdi:filter-cog"
     _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(
         self,

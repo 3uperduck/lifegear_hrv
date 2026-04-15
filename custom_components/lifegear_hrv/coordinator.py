@@ -40,6 +40,19 @@ _LOGGER = logging.getLogger(__name__)
 # Minimum seconds between re-login attempts (prevent login war with APP)
 _RELOGIN_COOLDOWN = 120
 
+# Process-wide lock per account. The cloud issues single-session AuthCodes:
+# a new code invalidates every previously-issued code for the user. Two
+# coordinators on the same account must not re-login concurrently or they
+# will wipe each other's auth_code mid-request. The lock is keyed by the
+# account id and shared across every coordinator instance.
+_relogin_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_relogin_lock(account: str) -> asyncio.Lock:
+    if account not in _relogin_locks:
+        _relogin_locks[account] = asyncio.Lock()
+    return _relogin_locks[account]
+
 
 class LifegearHRVCoordinator(DataUpdateCoordinator):
     """Class to manage fetching Lifegear HRV data."""
@@ -85,12 +98,41 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
         if not account or not password:
             return False
 
-        # Cooldown to prevent login war with APP
-        now = time.monotonic()
-        if now - self._last_relogin_time < _RELOGIN_COOLDOWN:
-            _LOGGER.debug("Re-login cooldown active, skipping")
-            return False
+        lock = _get_relogin_lock(str(account))
+        async with lock:
+            # After acquiring the lock, check whether a sibling coordinator
+            # just finished re-logging in on the same account and already
+            # propagated a fresh AuthCode to our entry data. If so, adopt
+            # it instead of hitting the cloud again (which would invalidate
+            # the sibling's in-flight request).
+            stored_auth = self.entry.data.get(CONF_AUTH_CODE)
+            if (
+                stored_auth
+                and stored_auth != self.auth_code
+            ):
+                _LOGGER.info(
+                    "AuthCode was refreshed by a sibling entry; adopting"
+                )
+                self.auth_code = stored_auth
+                self.user_id = self.entry.data.get(CONF_USER_ID, self.user_id)
+                self._auth_valid = True
+                self._last_relogin_time = time.monotonic()
+                self._relogin_attempted = False
+                return True
 
+            # Cooldown to prevent login war with APP
+            now = time.monotonic()
+            if now - self._last_relogin_time < _RELOGIN_COOLDOWN:
+                _LOGGER.debug("Re-login cooldown active, skipping")
+                return False
+
+            return await self._do_relogin(account, password, now)
+
+    async def _do_relogin(
+        self, account: str, password: str, now: float
+    ) -> bool:
+        """Perform the actual cloud re-login. Must be called with the
+        account lock held."""
         _LOGGER.info("Attempting to re-login to refresh AuthCode")
         self._last_relogin_time = now
         try:
@@ -115,12 +157,57 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
             self.user_id = result["u_id"]
             self.auth_code = result["auth_code"]
             self._auth_valid = True
+
+            # Propagate the new AuthCode to sibling entries with the same
+            # account. The cloud issues single-session AuthCodes: a new one
+            # invalidates every previously-issued code for the user. Without
+            # this sync two entries on the same account would ping-pong
+            # relogins forever, causing flapping entities.
+            self._propagate_auth_code(result["u_id"], result["auth_code"], now)
+
             _LOGGER.info("Re-login successful, AuthCode refreshed")
             return True
         except Exception as err:
             _LOGGER.error("Re-login failed: %s", err)
             self._auth_valid = False
             return False
+
+    def _propagate_auth_code(
+        self, user_id: str, auth_code: str, relogin_time: float
+    ) -> None:
+        """Push freshly minted AuthCode to sibling config entries on the same
+        account, and bump their re-login cooldown so they won't race back.
+        """
+        for sibling in self.hass.config_entries.async_entries(DOMAIN):
+            if sibling.entry_id == self.entry.entry_id:
+                continue
+            if sibling.data.get(CONF_USER_ID) != user_id:
+                continue
+            # Only sync entries that actually use cloud credentials.
+            # Manual / local-only entries stay untouched.
+            if not (
+                sibling.data.get(CONF_ACCOUNT)
+                and sibling.data.get(CONF_PASSWORD)
+            ):
+                continue
+            if sibling.data.get(CONF_AUTH_CODE) == auth_code:
+                continue
+            self.hass.config_entries.async_update_entry(
+                sibling,
+                data={**sibling.data, CONF_AUTH_CODE: auth_code},
+            )
+            sibling_coord = self.hass.data.get(DOMAIN, {}).get(sibling.entry_id)
+            if sibling_coord is not None:
+                sibling_coord.auth_code = auth_code
+                sibling_coord._auth_valid = True
+                sibling_coord._relogin_attempted = False
+                # Share the cooldown window so the sibling does not also
+                # try to re-login on its next update and invalidate us.
+                sibling_coord._last_relogin_time = relogin_time
+            _LOGGER.info(
+                "Propagated new AuthCode to sibling entry %s (%s)",
+                sibling.entry_id, sibling.title,
+            )
 
     async def async_cloud_login(self) -> None:
         """Initial cloud login to obtain AuthCode (called once at startup)."""
@@ -385,6 +472,10 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
         result["md_temp_oa"] = oa
         result["md_temp_sa"] = sa
         result["md_temp_ra"] = ra
+        # Note: PostAirIndex also has a top-level `Temp` field, but
+        # 24-hour comparison confirmed it is byte-for-byte identical to
+        # TempRA — a firmware alias, not an independent sensor. Don't
+        # expose it as its own entity (would be a duplicate).
 
         # Heat recovery efficiency: (SA - OA) / (RA - OA) × 100
         # Only meaningful when there's a meaningful temperature gradient.

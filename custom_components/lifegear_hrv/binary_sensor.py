@@ -10,7 +10,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, CONF_MAC, CONF_DEVICE_MODEL, DEVICE_MODEL_M8, DEVICE_MODEL_BATH_HEATER, DEVICE_MODEL_M8E_SENSOR
+from .const import (
+    DOMAIN, CONF_MAC, CONF_DEVICE_MODEL,
+    DEVICE_MODEL_M8, DEVICE_MODEL_M8E, DEVICE_MODEL_BATH_HEATER, DEVICE_MODEL_M8E_SENSOR,
+)
 from .coordinator import LifegearHRVCoordinator
 
 
@@ -43,6 +46,7 @@ class LifegearHRVConnectivity(CoordinatorEntity, BinarySensorEntity):
         name_map = {
             DEVICE_MODEL_BATH_HEATER: "暖風機連線狀態",
             DEVICE_MODEL_M8E_SENSOR: "M8-E 連線狀態",
+            DEVICE_MODEL_M8E: "HRV 連線狀態",
         }
         self._attr_name = name_map.get(model, "M8 連線狀態")
         self._attr_unique_id = f"lifegear_hrv_{mac}_connectivity"

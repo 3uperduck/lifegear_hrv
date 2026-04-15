@@ -14,6 +14,7 @@ from homeassistant.const import (
     CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
     CONCENTRATION_PARTS_PER_MILLION,
     PERCENTAGE,
+    EntityCategory,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
@@ -42,21 +43,29 @@ async def async_setup_entry(
     coordinator: LifegearHRVCoordinator = hass.data[DOMAIN][entry.entry_id]
     model = entry.data.get(CONF_DEVICE_MODEL, DEVICE_MODEL_M8)
 
-    # All device types have air quality sensors
-    sensors: list[SensorEntity] = [
-        LifegearHRVCO2Sensor(coordinator, entry),
-        LifegearHRVPM25Sensor(coordinator, entry),
-        LifegearHRVHumiditySensor(coordinator, entry),
-    ]
+    sensors: list[SensorEntity] = []
 
-    # Temperature: all except bath heater (returns empty temp)
-    if model != DEVICE_MODEL_BATH_HEATER:
-        sensors.append(LifegearHRVTemperatureSensor(coordinator, entry))
-
-    # Speed/Mode sensors: HRV devices only (M8, M8-E)
+    # Speed/Mode sensors (current-state readouts for HRV devices)
     if model in (DEVICE_MODEL_M8, DEVICE_MODEL_M8E):
         sensors.append(LifegearHRVSpeedSensor(coordinator, entry))
         sensors.append(LifegearHRVModeSensor(coordinator, entry))
+
+    # Air quality (CO2 / PM2.5 / Humidity):
+    # - Legacy M8, bath heater, and the standalone M8-E wall sensor device
+    #   have their own native air-quality sensors.
+    # - M8-E HRV does NOT. The cloud API proxies values from the paired
+    #   M8-E wall sensor into HRV's record, but exposing them here would
+    #   duplicate entities already present on the M8-E sensor device.
+    if model != DEVICE_MODEL_M8E:
+        sensors.append(LifegearHRVCO2Sensor(coordinator, entry))
+        sensors.append(LifegearHRVPM25Sensor(coordinator, entry))
+        sensors.append(LifegearHRVHumiditySensor(coordinator, entry))
+
+    # Indoor temperature: all except
+    # - bath heater (cloud returns empty temp)
+    # - M8-E HRV (no indoor sensor; only duct temps via addon MitM)
+    if model not in (DEVICE_MODEL_BATH_HEATER, DEVICE_MODEL_M8E):
+        sensors.append(LifegearHRVTemperatureSensor(coordinator, entry))
 
     # Bath heater: function sensor
     if model == DEVICE_MODEL_BATH_HEATER:
@@ -342,6 +351,7 @@ class LifegearFilterSensor(LifegearHRVBaseSensor):
     _attr_icon = "mdi:air-filter"
     _attr_native_unit_of_measurement = UnitOfTime.HOURS
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(
         self,
@@ -392,6 +402,8 @@ class LifegearHRVDuctTempSensor(LifegearHRVBaseSensor):
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_state_class = SensorStateClass.MEASUREMENT
+    # HRV firmware only transmits whole-degree temperatures
+    _attr_suggested_display_precision = 0
 
     def __init__(
         self,
@@ -415,7 +427,7 @@ class LifegearHRVDuctTempSensor(LifegearHRVBaseSensor):
         if val is None:
             return None
         try:
-            return float(val)
+            return int(round(float(val)))
         except (TypeError, ValueError):
             return None
 

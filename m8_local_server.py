@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M8 HRV Local Control Server v2.1.1 (M8 + M8-E MitM + per-MAC sensor split)
+"""M8 HRV Local Control Server v3.2.2 (M8 + M8-E MitM + HRV-only device state filter)
 
 Replaces m8.daguan-tech.com.tw for the M8 device, providing:
   - Local handling of all 4 device HTTP endpoints (port 80)
@@ -335,8 +335,30 @@ def _rebuild_merged_sensor() -> None:
     _sensor.update(merged)
 
 
+def _is_hrv_device_state(data: dict) -> bool:
+    """Identify HRV-main-unit responses to GetDeviceData.
+
+    Both the HRV unit and the paired M8-E sensor module poll the same
+    /api/AppV2/GetDeviceData endpoint. The cloud serves each device its
+    own per-MAC record. Only the HRV main unit's response carries the
+    `valveangle` and `Function` fields (it has a real motor + filters);
+    the sensor module's response is a stub with default Mode=1 Speed=1.
+    Without filtering, the two would alternately overwrite our shared
+    `_device_state` and break command-injection state matching.
+    """
+    return "valveangle" in data or "Function" in data
+
+
 def _set_device_state_m8e(data: dict) -> None:
-    """Update shared device state from M8-E GetDeviceData plaintext."""
+    """Update shared device state from M8-E GetDeviceData plaintext.
+
+    Ignores responses that don't look like the HRV main unit (e.g. the
+    paired M8-E sensor module's stub state) so the two devices don't
+    flip-flop our stored state.
+    """
+    if not _is_hrv_device_state(data):
+        log.debug("[DeviceData ignored] non-HRV source: %s", data)
+        return
     with _lock:
         _device_state["ispower"] = data.get("IsPower")
         _device_state["mode"]    = data.get("Mode")
@@ -779,7 +801,7 @@ class RestHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    log.info("=== M8 Local Control Server v2.1.1 (M8 + M8-E MitM + per-MAC sensor split) ===")
+    log.info("=== M8 Local Control Server v3.2.2 (M8 + M8-E MitM + HRV-only device state filter) ===")
 
     rest_server = ThreadingHTTPServer(("0.0.0.0", 8765), RestHandler)
     rest_thread = threading.Thread(target=rest_server.serve_forever, daemon=True)
