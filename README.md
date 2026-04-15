@@ -256,4 +256,4 @@ MIT License
 ## 致謝
 
 - [Anthropic Claude](https://www.anthropic.com/) 協助開發
-- 邵先生提供 M8-E HRV / 牆面感測器 / 浴室暖風機測試環境
+- 感謝邵先生提供 M8-E、隱藏式新風機、浴室暖風機與智慧果感測器測試環境
