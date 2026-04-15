@@ -94,9 +94,9 @@ Both the HRV main unit and the M8-E sensor module poll the same `GetDeviceData` 
 
 ```json
 {
-  "C4:D8:D5:28:7A:0A": {  "temp": "27", "temp_oa": "28", "temp_sa": "27", "temp_ra": "27",
+  "AA:BB:CC:11:22:33": {  "temp": "27", "temp_oa": "28", "temp_sa": "27", "temp_ra": "27",
                           "co2": null, "pm25": null, "rh": null, "...": null },
-  "C4:D8:D5:2F:60:D6": {  "co2": "920", "pm25": "5", "temp": "33", "rh": "62",
+  "AA:BB:CC:44:55:66": {  "co2": "920", "pm25": "5", "temp": "33", "rh": "62",
                           "temp_oa": null, "temp_sa": null, "temp_ra": null, "...": null }
 }
 ```
