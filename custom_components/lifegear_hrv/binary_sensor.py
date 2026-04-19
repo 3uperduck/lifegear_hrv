@@ -10,10 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (
-    DOMAIN, CONF_MAC, CONF_DEVICE_MODEL,
-    DEVICE_MODEL_M8, DEVICE_MODEL_M8E, DEVICE_MODEL_BATH_HEATER, DEVICE_MODEL_M8E_SENSOR,
-)
+from .const import DOMAIN, CONF_MAC
 from .coordinator import LifegearHRVCoordinator
 
 
@@ -42,13 +39,11 @@ class LifegearHRVConnectivity(CoordinatorEntity, BinarySensorEntity):
         """Initialize."""
         super().__init__(coordinator)
         mac = entry.data.get(CONF_MAC, "unknown")
-        model = entry.data.get(CONF_DEVICE_MODEL, DEVICE_MODEL_M8)
-        name_map = {
-            DEVICE_MODEL_BATH_HEATER: "暖風機連線狀態",
-            DEVICE_MODEL_M8E_SENSOR: "M8-E 連線狀態",
-            DEVICE_MODEL_M8E: "HRV 連線狀態",
-        }
-        self._attr_name = name_map.get(model, "M8 連線狀態")
+        # Friendly name is always just "連線狀態" — HA's device page already
+        # groups entities under the owning device, so prefixing with the
+        # device model (M8 / M8-E / HRV / 暖風機) would just duplicate
+        # information already visible in the card header.
+        self._attr_name = "連線狀態"
         self._attr_unique_id = f"lifegear_hrv_{mac}_connectivity"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, mac)},

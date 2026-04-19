@@ -578,11 +578,16 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
         return result
 
     async def _async_update_m8e_sensor(self) -> dict[str, Any]:
-        """Fetch M8-E sensor data from getDeviceAirIndex."""
+        """Fetch M8-E sensor data from getDeviceAirIndex + real online status."""
         auth_payload = f"u_id={self.user_id}&Mac={self.mac}&AuthCode={self.auth_code}"
+        list_payload = (
+            f"u_id={self.user_id}&ShareMidno=&AuthCode={self.auth_code}"
+        )
         result: dict[str, Any] = {"_device_model": DEVICE_MODEL_M8E_SENSOR}
 
         async with aiohttp.ClientSession() as session:
+            # 1) getDeviceAirIndex → sensor values (always succeeds if
+            #    cloud has cached data, even if the device is offline)
             async with session.post(
                 self._api_urls["air_index"],
                 data=auth_payload,
@@ -597,9 +602,36 @@ class LifegearHRVCoordinator(DataUpdateCoordinator):
                     result["md_pm25"] = air.get("pm25", "")
                     result["md_temp"] = air.get("temp", "")
                     result["md_rh"] = air.get("rh", "")
-                    result["md_isconnect"] = 1
                 else:
                     raise UpdateFailed("No sensor data received")
+
+            # 2) getDeviceList → real isOnLine status for this MAC.
+            #    getDeviceAirIndex doesn't carry isOnLine, so without
+            #    this step the sensor always shows "connected" as long
+            #    as the cloud has any cached data.
+            try:
+                async with session.post(
+                    self._api_urls["device_list"],
+                    data=list_payload,
+                    headers=HEADERS,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    text = await response.text()
+                    data = json.loads(text)
+                    if data and data[0].get("success"):
+                        for dev in data[0].get("result", []):
+                            if dev.get("Mac") == self.mac:
+                                result["md_isconnect"] = int(
+                                    dev.get("isOnLine", 0)
+                                )
+                                break
+                        else:
+                            result["md_isconnect"] = 0
+                    else:
+                        result["md_isconnect"] = 1  # fallback
+            except Exception as err:
+                _LOGGER.debug("getDeviceList failed for sensor: %s", err)
+                result["md_isconnect"] = 1  # optimistic fallback
 
         return result
 
